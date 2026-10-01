@@ -13,5 +13,9 @@
 __pycache__/
 *.pyc
 
+# Local sockets and agent-owned runtime files.
+/.runtime/
+/assets/
+
 # macOS filesystem metadata.
 .DS_Store

@@ -26,6 +26,7 @@ namespace ui {
 namespace app {
 
   class AppOptions;
+  class AutomationBridge;
   class ContextBar;
   class Document;
   class DocumentExporter;
@@ -107,6 +108,7 @@ namespace app {
     FileList m_files;
     std::unique_ptr<DocumentExporter> m_exporter;
     std::unique_ptr<AppBrushes> m_brushes;
+    std::unique_ptr<AutomationBridge> m_automation;
   };
 
   void app_refresh_screen();

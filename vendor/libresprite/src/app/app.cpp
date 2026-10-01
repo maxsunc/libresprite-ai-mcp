@@ -12,6 +12,7 @@
 #include "app/app.h"
 
 #include "app/app_options.h"
+#include "app/automation/bridge.h"
 #include "app/color_utils.h"
 #include "app/commands/cmd_save_file.h"
 #include "app/commands/cmd_sprite_size.h"
@@ -636,6 +637,11 @@ void App::initialize(const AppOptions& options)
   }
 
   she::instance()->finishLaunching();
+  if (!options.automationSocket().empty()) {
+    if (!isGui())
+      throw std::runtime_error("The automation bridge requires GUI mode.");
+    m_automation.reset(new AutomationBridge(options.automationSocket(), options.automationRoot()));
+  }
 }
 
 void App::run()
@@ -664,6 +670,9 @@ void App::run()
     Shell shell;
     shell.run(engine);
   }
+
+  // Stop the bridge before any documents or UI resources are destroyed.
+  m_automation.reset();
 
   // Destroy all documents in the UIContext.
   const doc::Documents& docs = m_modules->m_ui_context.documents();
@@ -698,6 +707,7 @@ void App::run()
 // Finishes the LibreSprite application.
 App::~App()
 {
+  m_automation.reset();
   try {
     ASSERT(m_instance == this);
 

@@ -34,6 +34,8 @@ public:
   VerboseLevel verboseLevel() const { return m_verboseLevel; }
 
   const std::string& paletteFileName() const { return m_paletteFileName; }
+  const std::string& automationSocket() const { return m_automationSocketName; }
+  const std::string& automationRoot() const { return m_automationRootName; }
 
   const ValueList& values() const {
     return m_po.values();
@@ -78,8 +80,12 @@ private:
   bool m_startShell;
   VerboseLevel m_verboseLevel;
   std::string m_paletteFileName;
+  std::string m_automationSocketName;
+  std::string m_automationRootName;
 
   Option& m_palette;
+  Option& m_automationSocket;
+  Option& m_automationRoot;
   Option& m_shell;
   Option& m_batch;
   Option& m_saveAs;

@@ -26,6 +26,8 @@ AppOptions::AppOptions(int argc, const char* argv[])
   , m_startShell(false)
   , m_verboseLevel(kNoVerbose)
   , m_palette(m_po.add("palette").requiresValue("<filename>").description("Use a specific palette by default"))
+  , m_automationSocket(m_po.add("automation-socket").requiresValue("<path>").description("Opt in to the local AI bridge (macOS/Linux GUI only)"))
+  , m_automationRoot(m_po.add("automation-root").requiresValue("<directory>").description("Restrict AI file access to this existing directory"))
   , m_shell(m_po.add("shell").description("Start an interactive console to execute scripts"))
   , m_batch(m_po.add("batch").mnemonic('b').description("Do not start the UI"))
   , m_saveAs(m_po.add("save-as").requiresValue("<filename>").description("Save the last given document with other format"))
@@ -67,6 +69,8 @@ AppOptions::AppOptions(int argc, const char* argv[])
       m_verboseLevel = kVerbose;
 
     m_paletteFileName = m_po.value_of(m_palette);
+    m_automationSocketName = m_po.value_of(m_automationSocket);
+    m_automationRootName = m_po.value_of(m_automationRoot);
     m_startShell = m_po.enabled(m_shell);
 
     if (m_po.enabled(m_help)) {

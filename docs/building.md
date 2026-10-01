@@ -133,5 +133,5 @@ The compiler emits upstream deprecation warnings and the linker reports
 duplicate library arguments, but neither prevents the build. No native source
 patches were needed for this baseline. The user also launched and manually
 tested the visible editor successfully. Multi-frame animation and the future
-automation bridge require their own validation; the bridge is not yet
-implemented.
+automation bridge require their own validation. The subsequent live bridge
+milestone and its tests are documented in [the live guide](live-bridge.md).
