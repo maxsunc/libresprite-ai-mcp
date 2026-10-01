@@ -202,7 +202,9 @@ LayerImage* Sprite::backgroundLayer() const
 
 LayerIndex Sprite::countLayers() const
 {
-  return LayerIndex(folder()->getLayersCount());
+  std::vector<Layer*> layers;
+  getLayersList(layers);
+  return LayerIndex(layers.size());
 }
 
 LayerIndex Sprite::firstLayer() const
@@ -212,7 +214,7 @@ LayerIndex Sprite::firstLayer() const
 
 LayerIndex Sprite::lastLayer() const
 {
-  return LayerIndex(folder()->getLayersCount()-1);
+  return LayerIndex(countLayers()-1);
 }
 
 Layer* Sprite::layer(int layerIndex) const
@@ -237,13 +239,15 @@ LayerIndex Sprite::layerToIndex(const Layer* layer) const
 
 void Sprite::getLayersList(std::vector<Layer*>& layers) const
 {
-  // TODO support subfolders
-  LayerConstIterator it = m_folder->getLayerBegin();
-  LayerConstIterator end = m_folder->getLayerEnd();
-
-  for (; it != end; ++it) {
-    layers.push_back(*it);
-  }
+  // Keep preorder consistent with indexToLayer/layerToIndex, including groups.
+  auto append = [&](auto&& self, const LayerFolder* folder) -> void {
+    for (auto it = folder->getLayerBegin(); it != folder->getLayerEnd(); ++it) {
+      auto layer = *it;
+      layers.push_back(layer);
+      if (layer->isFolder()) self(self, static_cast<const LayerFolder*>(layer));
+    }
+  };
+  append(append, m_folder);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -344,8 +348,14 @@ RgbMap* Sprite::rgbMap(frame_t frame, RgbMapFor forLayer) const
 void Sprite::addFrame(frame_t newFrame)
 {
   setTotalFrames(m_frames+1);
-  for (frame_t i=m_frames-1; i>=newFrame; --i)
+  // The inserted slot inherits a duration until the caller sets it. Copy only
+  // displaced frames: reading frameDuration(-1) at insertion index 0 is invalid.
+  for (frame_t i=m_frames-1; i>newFrame; --i)
     setFrameDuration(i, frameDuration(i-1));
+  // Preserve preceding-frame timing for nonzero insertions. At index 0 keep
+  // the original first duration instead of clamping an invalid read to 1 ms.
+  if (newFrame > 0)
+    setFrameDuration(newFrame, frameDuration(newFrame-1));
 
   folder()->displaceFrames(newFrame, +1);
 }

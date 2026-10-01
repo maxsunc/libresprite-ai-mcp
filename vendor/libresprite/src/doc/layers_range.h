@@ -39,6 +39,7 @@ namespace doc {
       iterator& operator++();
 
     private:
+      const Sprite* m_sprite;
       Layer* m_layer;
       LayerIndex m_cur, m_last;
       std::set<ObjectId> m_visited;

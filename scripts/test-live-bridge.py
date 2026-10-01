@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from bridge_workflow_cases import test_layers_frames_drawing
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -71,6 +72,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
+                assert status["bridgeVersion"] == "0.2.0" and "add_frame" in status["methods"]
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
                 malformed = json.loads(client.reader.readline())
@@ -166,6 +168,8 @@ def main():
                 client.request("set_paused", {"paused": True})
                 assert current()["documentId"] == document_id
                 print("PASS: disconnect pauses editing, reconnect/reads work, retained replay does not reapply edits.")
+                client.request("set_paused", {"paused": False})
+                test_layers_frames_drawing(client, assets, SMOKE)
             finally:
                 if client:
                     client.close()

@@ -24,7 +24,8 @@ LayersRange::LayersRange(const Sprite* sprite,
 }
 
 LayersRange::iterator::iterator()
-  : m_layer(nullptr)
+  : m_sprite(nullptr)
+  , m_layer(nullptr)
   , m_cur(-1)
   , m_last(-1)
 {
@@ -32,7 +33,8 @@ LayersRange::iterator::iterator()
 
 LayersRange::iterator::iterator(const Sprite* sprite,
                                 LayerIndex first, LayerIndex last)
-  : m_layer(nullptr)
+  : m_sprite(sprite)
+  , m_layer(nullptr)
   , m_cur(first)
   , m_last(last)
 {
@@ -48,7 +50,8 @@ LayersRange::iterator& LayersRange::iterator::operator++()
   if (m_cur > m_last)
     m_layer = nullptr;
   else
-    m_layer = m_layer->getNext();
+    // getNext() only walks siblings and would silently omit group children.
+    m_layer = m_sprite->indexToLayer(m_cur);
 
   return *this;
 }

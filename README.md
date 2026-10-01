@@ -5,9 +5,9 @@ will let AI agents inspect, draw, and animate sprites in the visible application
 
 ## Current scope
 
-The reproducible native baseline and the first live bridge/MCP slice are
-implemented. This is an early development integration, not yet a full artist
-workflow.
+The reproducible native baseline and live bridge/MCP integration are implemented,
+including layer management, drawing primitives, and basic animation. This is an
+early development integration, not yet a full artist workflow.
 
 The baseline has been built on Apple Silicon and passes CLI, scripting,
 pixel-exact native-file round-trip, and sprite-sheet export smoke tests.
@@ -48,8 +48,9 @@ with `libresprite_set_paused` before editing. A normal editor launched without
 automation flags remains disconnected from agents.
 
 Available now: document creation/opening, inspection, rendered PNG feedback,
-atomic undoable RGBA pixel batches, undo/redo, and native save. See the
-[live bridge guide](docs/live-bridge.md) for setup, all 12 tools, and limitations.
+undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
+frames and timing, undo/redo, and native save. See the
+[live bridge guide](docs/live-bridge.md) for setup, all **22 tools**, and limitations.
 
 ```sh
 npm test
@@ -58,6 +59,8 @@ python3 scripts/test-live-bridge.py
 
 The integration test launches its own disposable GUI instance. A visible MCP
 demo is available with `node scripts/demo-live.mjs` after both builds.
+Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo.
+Already-running editor windows must be restarted to pick up native updates.
 
 ## Source and licensing
 

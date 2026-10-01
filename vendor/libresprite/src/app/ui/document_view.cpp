@@ -359,8 +359,16 @@ void DocumentView::onBeforeRemoveLayer(doc::DocumentEvent& ev)
   Sprite* sprite = ev.sprite();
   Layer* layer = ev.layer();
 
-  // If the layer that was removed is the selected one
-  if (layer == m_editor->layer()) {
+  // Removing a group also deletes every descendant. Repair all views before
+  // any pointer becomes invalid, including undo/redo and transaction rollback.
+  bool selectionRemoved = false;
+  for (Layer* selected = m_editor->layer(); selected; selected = selected->parent()) {
+    if (selected == layer) {
+      selectionRemoved = true;
+      break;
+    }
+  }
+  if (selectionRemoved) {
     LayerFolder* parent = layer->parent();
     Layer* layer_select = NULL;
 

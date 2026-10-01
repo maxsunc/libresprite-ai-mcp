@@ -124,3 +124,19 @@ test("closing with queued work rejects requests without opening another connecti
     assert.equal(client.sessionId, undefined);
   } finally { client.close(); await fixture.close(); }
 });
+
+test("reported capabilities refuse unsupported methods before sending an edit", async () => {
+  const methods: string[] = [];
+  const fixture = await mock((request, socket) => {
+    methods.push(request.method);
+    reply(socket, request, { protocolVersion: 1, sessionId: "s", methods: ["status", "inspect"] });
+  });
+  const client = new BridgeClient(fixture.endpoint);
+  try {
+    await client.request("status");
+    await assert.rejects(client.request("add_frame"), (error) => error instanceof BridgeError && error.code === "UNSUPPORTED_METHOD");
+    assert.deepEqual(methods, ["status"]);
+    await client.request("inspect");
+    assert.deepEqual(methods, ["status", "inspect"]);
+  } finally { client.close(); await fixture.close(); }
+});

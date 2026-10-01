@@ -162,7 +162,8 @@ void BrushPreview::show(const gfx::Point& screenPos)
     generateBoundaries();
 
   // Draw pixel/brush preview
-  if ((m_type & CROSS) && usePreview) {
+  // A selected group has no image opacity/blend mode and cannot be painted.
+  if ((m_type & CROSS) && usePreview && (!layer || layer->isImage())) {
     gfx::Rect origBrushBounds = (isFloodfill ? gfx::Rect(0, 0, 1, 1): brush->bounds());
     gfx::Rect brushBounds = origBrushBounds;
     brushBounds.offset(spritePos);

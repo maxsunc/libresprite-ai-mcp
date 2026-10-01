@@ -24,6 +24,7 @@ export class BridgeClient {
     timer: ReturnType<typeof setTimeout>;
   };
   sessionId?: string;
+  private supportedMethods?: ReadonlySet<string>;
 
   constructor(readonly socketPath: string, private readonly timeoutMs = 10_000) {}
 
@@ -51,6 +52,7 @@ export class BridgeClient {
     this.input = "";
     // Do not carry a session token into a new connection/process.
     this.sessionId = undefined;
+    this.supportedMethods = undefined;
   }
 
   private async connect(): Promise<void> {
@@ -127,6 +129,9 @@ export class BridgeClient {
     if (method !== "status" && !this.sessionId) {
       throw new BridgeError("NOT_CONNECTED", "Call libresprite_connect after connecting or reconnecting, then explicitly resume before editing.");
     }
+    if (method !== "status" && this.supportedMethods && !this.supportedMethods.has(method)) {
+      throw new BridgeError("UNSUPPORTED_METHOD", `This editor does not support ${method}. Rebuild LibreSprite and launch a NEW development window; running windows keep their old bridge.`);
+    }
     // Capture the token at execution time, not when a request entered the queue.
     const payload = method === "status" ? params : { ...params, sessionId: this.sessionId };
     const id = randomUUID();
@@ -145,6 +150,9 @@ export class BridgeClient {
         throw new BridgeError("PROTOCOL_MISMATCH", "Unsupported native bridge version.");
       }
       this.sessionId = result.sessionId;
+      if (Array.isArray(result.methods) && result.methods.every((method) => typeof method === "string")) {
+        this.supportedMethods = new Set(result.methods as string[]);
+      }
     }
     return result;
   }

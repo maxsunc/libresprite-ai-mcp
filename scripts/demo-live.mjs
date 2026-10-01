@@ -19,7 +19,8 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-live-demo", version: "0.1.0" });
+const client = new Client({ name: "libresprite-live-demo", version: "0.2.0" });
+const animation = process.argv.includes("--animation");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function call(name, args = {}) {
@@ -33,7 +34,7 @@ async function call(name, args = {}) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 12);
+  assert.equal((await client.listTools()).tools.length, 22);
   console.log((await call("libresprite_launch")).metadata);
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -41,7 +42,7 @@ try {
     catch (error) { if (Date.now() > deadline) throw error; await wait(100); }
   }
   await call("libresprite_set_paused", { paused: false });
-  let document = (await call("libresprite_create", { width: 32, height: 32, name: "MCP live demo - mushroom" })).metadata;
+  let document = (await call("libresprite_create", { width: 32, height: 32, name: animation ? "MCP animation demo - mushroom" : "MCP live demo - mushroom" })).metadata;
   const documentId = document.documentId;
   const layerId = document.layers[0].layerId;
   const rows = [
@@ -75,22 +76,70 @@ try {
     document = (await call("libresprite_set_pixels", { documentId, layerId, expectedRevision: document.revision, frame: 0, label: `Mushroom rows ${first + 1}-${Math.min(first + 3, rows.length)}`, pixels })).metadata;
     await wait(200);
   }
-  const beforeUndo = await call("libresprite_render", { documentId, frame: 0, scale: 8 });
+  let previewFrame = 0;
+  async function mutate(method, args) {
+    document = (await call(`libresprite_${method}`, { documentId, expectedRevision: document.revision, ...args })).metadata;
+    await wait(120);
+    return document;
+  }
+  if (animation) {
+    await mutate("update_layer", { layerId, name: "Mushroom" });
+    const backdrop = (await mutate("create_layer", { name: "Backdrop", afterLayerId: null })).createdLayerId;
+    await mutate("flood_fill", { layerId: backdrop, frame: 0, x: 0, y: 0, color: { r: 27, g: 35, b: 60, a: 255 } });
+    const effects = (await mutate("create_layer", { name: "Effects", type: "group" })).createdLayerId;
+    const sparkle = (await mutate("create_layer", { name: "Sparkles", parentId: effects })).createdLayerId;
+    const cream = { r: 255, g: 219, b: 172, a: 255 };
+    const clear = { r: 0, g: 0, b: 0, a: 0 };
+    await mutate("draw_stroke", { layerId: sparkle, frame: 0, color: cream, points: [{ x: 3, y: 4 }, { x: 3, y: 8 }] });
+    await mutate("draw_stroke", { layerId: sparkle, frame: 0, color: cream, points: [{ x: 1, y: 6 }, { x: 5, y: 6 }] });
+    for (let frame = 1; frame < 4; frame++) {
+      await mutate("add_frame", { index: frame, copyFrom: 0, durationMs: [100, 150, 100, 200][frame] });
+      await mutate("draw_shape", { layerId: sparkle, frame, shape: "rectangle", x1: 0, y1: 0, x2: 31, y2: 31, color: clear, filled: true });
+      const [x, y] = [[25, 6], [25, 25], [5, 25]][frame - 1];
+      await mutate("draw_stroke", { layerId: sparkle, frame, color: cream, points: [{ x, y: y - 2 }, { x, y: y + 2 }] });
+      await mutate("draw_stroke", { layerId: sparkle, frame, color: cream, points: [{ x: x - 2, y }, { x: x + 2, y }] });
+    }
+    assert.equal(document.frameCount, 4);
+    assert.equal(document.layers.length, 4);
+    assert.ok(document.layers.every((layer) => (layer.cels ?? []).every((cel) => cel.links === 0)));
+    previewFrame = 3;
+  }
+  const beforeUndo = await call("libresprite_render", { documentId, frame: previewFrame, scale: 8 });
   document = (await call("libresprite_undo", { documentId, expectedRevision: document.revision })).metadata;
   await wait(200);
   document = (await call("libresprite_redo", { documentId, expectedRevision: document.revision })).metadata;
-  const afterRedo = await call("libresprite_render", { documentId, frame: 0, scale: 8 });
+  const afterRedo = await call("libresprite_render", { documentId, frame: previewFrame, scale: 8 });
   const image = afterRedo.content.find((item) => item.type === "image");
   assert.equal(image.data, beforeUndo.content.find((item) => item.type === "image").data);
-  document = (await call("libresprite_save", { documentId, expectedRevision: document.revision, path: "mushroom.ase" })).metadata;
+  const filename = animation ? "mushroom-animation.ase" : "mushroom.ase";
+  document = (await call("libresprite_save", { documentId, expectedRevision: document.revision, path: filename })).metadata;
   assert.equal(document.modified, false);
   const png = path.join(assets, "mushroom-preview.png");
   await writeFile(png, Buffer.from(image.data, "base64"));
+  if (animation) {
+    const frames = [];
+    for (let frame = 0; frame < 4; frame++) {
+      const rendered = await call("libresprite_render", { documentId, frame, scale: 8 });
+      const data = rendered.content.find((item) => item.type === "image").data;
+      frames.push(data);
+      await writeFile(path.join(assets, `frame-${frame}.png`), Buffer.from(data, "base64"));
+    }
+    const reopened = (await call("libresprite_open", { path: filename })).metadata;
+    assert.deepEqual(reopened.frames.map((frame) => frame.durationMs), [100, 150, 100, 200]);
+    assert.equal(reopened.layers.length, 4);
+    for (let frame = 0; frame < 4; frame++) {
+      const rendered = await call("libresprite_render", { documentId: reopened.documentId, frame, scale: 8 });
+      assert.equal(rendered.content.find((item) => item.type === "image").data, frames[frame]);
+    }
+  }
   await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...document, png, assetRoot: assets }, null, 2) + "\n");
   await call("libresprite_set_paused", { paused: true });
-  console.log(`PASS: real MCP stdio -> native GUI -> pixel batches -> PNG -> undo/redo -> .ase save.`);
+  console.log(animation
+    ? "PASS: real MCP -> native grouped layers, shapes/strokes/fills, 4 independent frames, undo/redo, pixel-exact animation save/reopen."
+    : "PASS: real MCP stdio -> native GUI -> pixel batches -> PNG -> undo/redo -> .ase save.");
   console.log(`Preview: ${png}`);
   console.log("The demo editor is left open and paused. Close it when finished.");
+  if (animation) console.log("Agent editing is paused; use LibreSprite's play button to preview the animation.");
 } finally {
   try { await call("libresprite_set_paused", { paused: true }); } catch {}
   await client.close();

@@ -506,6 +506,11 @@ tools::ToolLoop* create_tool_loop(Editor* editor, Context* context)
         1000, "There is no active layer");
       return nullptr;
     }
+    else if (!layer->isImage()) {
+      StatusBar::instance()->showTip(
+        1000, "Select an image layer inside the group to draw");
+      return nullptr;
+    }
     else if (!layer->isVisible()) {
       StatusBar::instance()->showTip(
         1000, "Layer '%s' is hidden", layer->name().c_str());
@@ -624,6 +629,7 @@ tools::ToolLoop* create_tool_loop_preview(
 
   Layer* layer = editor->layer();
   if (!layer ||
+      !layer->isImage() ||
       !layer->isVisible() ||
       !layer->isEditable()) {
     return nullptr;

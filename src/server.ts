@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.2.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -25,6 +25,10 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const channel = z.number().int().min(0).max(255);
   const relativePath = z.string().min(1).max(4096);
   const target = { documentId, expectedRevision };
+  const paintTarget = { ...target, layerId: documentId, frame };
+  const coordinate = z.number().int().min(0).max(1023);
+  const point = z.object({ x: coordinate, y: coordinate });
+  const color = z.object({ r: channel, g: channel, b: channel, a: channel });
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -116,6 +120,55 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     description: "Apply an atomic, undoable RGBA pixel batch to an explicit layer/frame in the ACTIVE document. Coordinates are canvas pixels, colors replace pixels (not alpha-blended), duplicates use the last color. Requires current revision and resumed bridge. Refuses locked/background layers and linked cels. Does not apply the selection mask. Render after editing to inspect the result.",
     inputSchema: { ...target, layerId: documentId, frame, label: z.string().min(1).max(120).default("AI pixel edit"), pixels: z.array(z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(1023), r: channel, g: channel, b: channel, a: channel })).min(1).max(16384) }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("set_pixels", params));
+  server.registerTool("libresprite_create_layer", {
+    description: "Create/select an undoable empty image layer or group in the active document. parentId null/omitted means root; otherwise an editable group. Omit afterLayerId to append on top, or use null for the bottom. Never inserts below a background. Returns createdLayerId. Requires resumed bridge/current revision.",
+    inputSchema: { ...target, name: z.string().min(1).max(120), type: z.enum(["image", "group"]).default("image"), parentId: documentId.nullable().optional(), afterLayerId: documentId.nullable().optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("create_layer", params));
+  server.registerTool("libresprite_update_layer", {
+    description: "Atomically update layer name, visibility, lock state (editable), and/or image-layer opacity (0-255). Requires current revision. A locked layer must be explicitly unlocked in a separate request before other changes; locked ancestors are always refused. No-op changes do not create an undo step.",
+    inputSchema: { ...target, layerId: documentId, name: z.string().min(1).max(120).optional(), visible: z.boolean().optional(), editable: z.boolean().optional(), opacity: channel.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("update_layer", params));
+  server.registerTool("libresprite_move_layer", {
+    description: "Undoably restack a layer AFTER a different sibling in the SAME group. Order is bottom-to-top: afterLayerId null puts it at the bottom. Does not reparent layers or move background layers. Requires active document, resumed bridge, and current revision.",
+    inputSchema: { ...target, layerId: documentId, afterLayerId: documentId.nullable() },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("move_layer", params));
+  server.registerTool("libresprite_remove_layer", {
+    description: "Undoably delete a layer and its cels on ALL frames. A nonempty group additionally requires recursive:true and deletes its whole subtree. Refuses locked/background descendants and removal of the last image layer. Requires current revision and resumed bridge.",
+    inputSchema: { ...target, layerId: documentId, recursive: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("remove_layer", params));
+  server.registerTool("libresprite_add_frame", {
+    description: "Undoably insert/select a frame at zero-based index (0 through current frame count). Omit copyFrom for blank; otherwise copy that PRE-insertion frame across all image layers with independent, unlinked cels. durationMs defaults to 100 for blank or source duration for copies. Following frame indices shift; inspect again. Refuses locked layers and per-frame palettes. Existing tags are adjusted natively.",
+    inputSchema: { ...target, index: frame, copyFrom: frame.optional(), durationMs: z.number().int().min(1).max(65535).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("add_frame", params));
+  server.registerTool("libresprite_remove_frame", {
+    description: "Undoably remove a zero-based frame and all its cels; later indices shift and tag ranges update. Refuses the last frame, locked layers, and per-frame palettes. Requires active document/current revision/resumed bridge. Inspect again before editing another frame.",
+    inputSchema: { ...target, frame }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("remove_frame", params));
+  server.registerTool("libresprite_set_frame_duration", {
+    description: "Undoably set/select one frame's duration in milliseconds (1-65535, matching native-file storage). Requires active document, resumed bridge, and current revision. Identical duration is a no-op.",
+    inputSchema: { ...target, frame, durationMs: z.number().int().min(1).max(65535) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("set_frame_duration", params));
+  server.registerTool("libresprite_draw_shape", {
+    description: "Draw a native pixel-aligned line, rectangle, or ellipse as ONE undoable edit on an explicit layer/frame. Endpoints are inclusive, inside the canvas; rectangle/ellipse corners may be reversed. Lines and outlines are one pixel wide. filled defaults false (invalid for a line). Replaces RGBA colors, ignores selection masks, refuses linked/background/locked cels/layers. Render afterwards; alpha 0 erases. No-op drawing leaves history unchanged.",
+    inputSchema: { ...paintTarget, shape: z.enum(["line", "rectangle", "ellipse"]), x1: coordinate, y1: coordinate, x2: coordinate, y2: coordinate, color, filled: z.boolean().default(false), label: z.string().min(1).max(120).default("AI shape") },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("draw_shape", params));
+  server.registerTool("libresprite_draw_stroke", {
+    description: "Draw a connected one-pixel polyline with 1-1024 canvas points as one atomic native undo step. Native line rasterization, inclusive endpoints, RGBA replacement (alpha 0 erases). Ignores selection masks; refuses locked/background layers and linked cels. No pressure, brush width, or smoothing yet. Render afterwards.",
+    inputSchema: { ...paintTarget, points: z.array(point).min(1).max(1024), color, label: z.string().min(1).max(120).default("AI stroke") },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("draw_stroke", params));
+  server.registerTool("libresprite_flood_fill", {
+    description: "Flood fill the TARGET CEL's full canvas, not the composited sprite. Native matching uses per-RGBA-channel tolerance (0-255) and treats fully transparent colors as equivalent. contiguous:true fills the connected region; false replaces all matching pixels in that layer/frame. Replaces colors, ignores selection masks, requires current revision/resumed bridge, refuses linked/background/locked layers. An empty cel's transparent canvas can be filled. One undo step unless no pixels change.",
+    inputSchema: { ...paintTarget, x: coordinate, y: coordinate, color, tolerance: channel.default(0), contiguous: z.boolean().default(true), label: z.string().min(1).max(120).default("AI flood fill") },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("flood_fill", params));
   for (const operation of ["undo", "redo"] as const) server.registerTool(`libresprite_${operation}`, {
     description: `${operation === "undo" ? "Undo" : "Redo"} one native undo transaction in the active document. Requires its current revision and resumed bridge. May affect manual edits as well as agent edits.`,
     inputSchema: target, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },

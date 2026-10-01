@@ -46,6 +46,8 @@ namespace doc {
       iterator& operator++();
 
     private:
+      const Sprite* m_sprite;
+      int m_layerIndex;
       std::shared_ptr<Cel> m_cel;
       frame_t m_first, m_last;
       Flags m_flags;

@@ -24,26 +24,30 @@ CelsRange::CelsRange(const Sprite* sprite,
 }
 
 CelsRange::iterator::iterator()
-  : m_cel(nullptr)
+  : m_sprite(nullptr)
+  , m_layerIndex(-1)
+  , m_cel(nullptr)
 {
 }
 
 CelsRange::iterator::iterator(const Sprite* sprite, frame_t first, frame_t last, CelsRange::Flags flags)
-  : m_cel(nullptr)
+  : m_sprite(sprite)
+  , m_layerIndex(0)
+  , m_cel(nullptr)
   , m_first(first)
   , m_last(last)
   , m_flags(flags)
 {
   // Get first cel
-  Layer* layer = sprite->layer(sprite->firstLayer());
-  while (layer && !m_cel) {
+  for (; m_layerIndex < sprite->countLayers(); ++m_layerIndex) {
+    Layer* layer = sprite->layer(m_layerIndex);
     for (frame_t f=first; f<=last; ++f) {
       m_cel = layer->cel(f);
       if (m_cel)
         break;
       m_cel = nullptr;
     }
-    layer = layer->getNext();
+    if (m_cel) break;
   }
   if (m_cel && flags == CelsRange::UNIQUE)
     m_visited.insert(m_cel->data()->id());
@@ -55,11 +59,11 @@ CelsRange::iterator& CelsRange::iterator::operator++()
     return *this;
 
   // Get next cel
-  Layer* layer = m_cel->layer();
   frame_t first = m_cel->frame()+1;
   m_cel = nullptr;
 
-  while (layer && !m_cel) {
+  for (; m_layerIndex < m_sprite->countLayers(); ++m_layerIndex) {
+    Layer* layer = m_sprite->layer(m_layerIndex);
     for (frame_t f=first; f<=m_last; ++f) {
       m_cel = layer->cel(f);
       if (m_cel) {
@@ -75,7 +79,7 @@ CelsRange::iterator& CelsRange::iterator::operator++()
           break;
       }
     }
-    layer = layer->getNext();
+    if (m_cel) break;
     first = m_first;
   }
   return *this;

@@ -266,7 +266,7 @@ bool StandbyState::onMouseDown(Editor* editor, MouseMessage* msg)
     }
 
     // Move selected pixels
-    if (layer && editor->isInsideSelection() && msg->left()) {
+    if (layer && layer->isImage() && editor->isInsideSelection() && msg->left()) {
       if (!layer->isEditable()) {
         StatusBar::instance()->showTip(1000,
           "Layer '%s' is locked", layer->name().c_str());

@@ -4,8 +4,17 @@
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
 #include "app/cmd/add_cel.h"
+#include "app/cmd/add_layer.h"
+#include "app/cmd/copy_cel.h"
+#include "app/cmd/move_layer.h"
 #include "app/cmd/patch_cel.h"
+#include "app/cmd/remove_layer.h"
+#include "app/cmd/set_frame_duration.h"
+#include "app/cmd/set_layer_flags.h"
+#include "app/cmd/set_layer_name.h"
+#include "app/cmd/set_layer_opacity.h"
 #include "app/context_access.h"
+#include "app/document_api.h"
 #include "app/document_undo.h"
 #include "app/file/file.h"
 #include "app/modules/editors.h"
@@ -18,12 +27,14 @@
 #include "base/base64.h"
 #include "base/sha1_rfc3174.h"
 #include "doc/cel.h"
+#include "doc/algorithm/floodfill.h"
 #include "doc/documents.h"
 #include "doc/frame_tag.h"
 #include "doc/image.h"
 #include "doc/layer.h"
 #include "doc/layers_range.h"
 #include "doc/palette.h"
+#include "doc/primitives.h"
 #include "doc/sprite.h"
 #include "render/render.h"
 #include "she/surface.h"
@@ -78,6 +89,56 @@ std::string text(const Json& object, const char* key, size_t limit = 4096) {
   require(!value.empty() && value.size() <= limit && value.find('\0') == std::string::npos, "INVALID_PARAMS", std::string(key) + " is empty or too long.");
   return value;
 }
+bool boolean(const Json& object, const char* key) {
+  require(object.contains(key) && object[key].is_boolean(), "INVALID_PARAMS", std::string(key) + " must be boolean.");
+  return object[key].get<bool>();
+}
+color_t color(const Json& params) {
+  require(params.contains("color") && params["color"].is_object(), "INVALID_PARAMS", "color must contain r, g, b, and a.");
+  const auto& value = params["color"];
+  return rgba(integer(value, "r", 0, 255), integer(value, "g", 0, 255), integer(value, "b", 0, 255), integer(value, "a", 0, 255));
+}
+Layer* findLayer(Sprite* sprite, int id) {
+  for (auto layer : sprite->layers()) if (layer->id() == ObjectId(id)) return layer;
+  throw BridgeError("LAYER_NOT_FOUND", "Layer no longer exists in this document.");
+}
+void editable(Layer* target) {
+  for (auto layer = target; layer; layer = layer->parent())
+    require(layer->isEditable(), "LAYER_LOCKED", "Target layer or its parent is locked.");
+}
+void workingLimits(Document* document) {
+  std::vector<Image*> images;
+  document->sprite()->getImages(images);
+  size_t total = 0;
+  for (auto image : images) {
+    total += size_t(image->getRowStrideSize()) * size_t(image->height());
+    require(total <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Sprite image data exceeds the bridge's 32 MiB working limit.");
+  }
+}
+// Native structural commands can change editor selection during execution.
+// On rollback restore IDs, not potentially deleted/recreated layer pointers.
+class SelectionGuard {
+public:
+  explicit SelectionGuard(Document* document) : m_document(document) {
+    auto editor = UIContext::instance()->activeEditor();
+    m_layerId = editor->layer() ? editor->layer()->id() : 0;
+    m_frame = editor->frame();
+  }
+  ~SelectionGuard() {
+    if (committed) return;
+    try {
+      auto editor = UIContext::instance()->activeEditor();
+      for (auto layer : m_document->sprite()->layers()) if (layer->id() == m_layerId) editor->setLayer(layer);
+      editor->setFrame(std::min(m_frame, m_document->sprite()->lastFrame()));
+      m_document->notifyGeneralUpdate();
+    } catch (...) { /* Preserve the original operation error. */ }
+  }
+  bool committed = false;
+private:
+  Document* m_document;
+  ObjectId m_layerId;
+  frame_t m_frame;
+};
 void nonblocking(int fd) {
   if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
     throw std::runtime_error("Cannot configure automation socket.");
@@ -214,8 +275,8 @@ private:
   Json details(Document* document) {
     auto result = summary(document);
     auto sprite = document->sprite();
-    require(size_t(sprite->width()) * size_t(sprite->height()) <= MaxPixels && sprite->totalFrames() <= 256,
-            "LIMIT_EXCEEDED", "This first bridge supports at most 1,048,576 canvas pixels and 256 frames.");
+    require(sprite->width() <= 1024 && sprite->height() <= 1024 && sprite->totalFrames() <= 256,
+            "LIMIT_EXCEEDED", "The bridge supports at most 1024x1024 canvas pixels and 256 frames.");
     result["layers"] = Json::array();
     int count = 0;
     for (auto layer : sprite->layers()) {
@@ -279,6 +340,10 @@ private:
     auto result = details(document);
     result["revision"] = revision(document, result);
     result["sessionId"] = m_session;
+    auto editor = UIContext::instance()->activeEditor();
+    bool active = editor && editor->document() == document;
+    result["activeLayerId"] = active && editor->layer() ? Json(editor->layer()->id()) : Json(nullptr);
+    result["activeFrame"] = active ? Json(editor->frame()) : Json(nullptr);
     return result;
   }
   Document* findDocument(const Json& params) {
@@ -322,19 +387,48 @@ private:
     result["pngBase64"] = encoded; result["frame"] = frame; result["scale"] = scale;
     return result;
   }
-  void setPixels(Document* document, const Json& params) {
+  Layer* paintLayer(Document* document, const Json& params) {
     auto sprite = document->sprite();
     require(sprite->pixelFormat() == IMAGE_RGB, "UNSUPPORTED_COLOR_MODE", "Pixel edits currently require RGBA sprites.");
-    auto layerId = integer(params, "layerId", 1, INT32_MAX);
-    Layer* target = nullptr;
-    for (auto layer : sprite->layers()) if (layer->id() == ObjectId(layerId)) target = layer;
-    require(target && target->isImage(), "LAYER_NOT_FOUND", "An image layer in this document is required.");
-    for (auto layer = target; layer; layer = layer->parent())
-      require(layer->isEditable(), "LAYER_LOCKED", "Target layer or its parent is locked.");
+    auto target = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+    require(target->isImage(), "UNSUPPORTED_LAYER", "An image layer is required for drawing.");
+    editable(target);
     require(!target->isBackground(), "UNSUPPORTED_LAYER", "Pixel edits currently require a transparent layer.");
     auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
     auto cel = target->cel(frame);
     require(!cel || cel->links() == 0, "LINKED_CEL", "Unlink the cel before editing; implicit edits across frames are refused.");
+    return target;
+  }
+  void finish(Transaction& transaction, Document* document) {
+    // Check before commit, so a large structural edit rolls back rather than
+    // committing an uninspectable document and returning an ambiguous error.
+    workingLimits(document);
+    require(details(document).dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Document metadata exceeds the bridge limit.");
+    transaction.commit();
+    document->notifyGeneralUpdate();
+  }
+  void applyPatch(Document* document, Layer* target, frame_t frame,
+                  const ImageRef& patch, const gfx::Region& region,
+                  const gfx::Point& position, const std::string& label) {
+    if (region.isEmpty()) return;
+    auto cel = target->cel(frame);
+    // An absent cel has no image to preserve, but the patch's unpainted pixels
+    // must be transparent (including holes in shapes).
+    UIContext::instance()->activeEditor()->setLayer(target);
+    UIContext::instance()->activeEditor()->setFrame(frame);
+    Transaction transaction(UIContext::instance(), label);
+    if (cel) transaction.execute(new cmd::PatchCel(cel, patch.get(), region, position));
+    else {
+      auto created = std::make_shared<Cel>(frame, patch);
+      created->setPosition(position);
+      transaction.execute(new cmd::AddCel(target, created));
+    }
+    finish(transaction, document);
+  }
+  void setPixels(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto target = paintLayer(document, params);
+    auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
     require(params.contains("pixels") && params["pixels"].is_array() && !params["pixels"].empty() && params["pixels"].size() <= 16384,
             "INVALID_PARAMS", "Provide between 1 and 16,384 pixels.");
     struct Pixel { int x, y; color_t color; };
@@ -354,17 +448,204 @@ private:
       region |= gfx::Region(gfx::Rect(pixel.x - bounds.x, pixel.y - bounds.y, 1, 1));
     }
     auto label = params.contains("label") ? text(params, "label", 120) : "AI pixel edit";
-    UIContext::instance()->activeEditor()->setLayer(target);
-    UIContext::instance()->activeEditor()->setFrame(frame);
-    Transaction transaction(UIContext::instance(), label);
-    if (cel) transaction.execute(new cmd::PatchCel(cel, patch.get(), region, gfx::Point(bounds.x, bounds.y)));
-    else {
-      auto created = std::make_shared<Cel>(frame, patch);
-      created->setPosition(bounds.x, bounds.y);
-      transaction.execute(new cmd::AddCel(target, created));
+    applyPatch(document, target, frame, patch, region, gfx::Point(bounds.x, bounds.y), label);
+  }
+  void draw(Document* document, const Json& params, const std::string& method) {
+    auto sprite = document->sprite();
+    auto target = paintLayer(document, params);
+    auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+    auto paint = color(params);
+    auto label = params.contains("label") ? text(params, "label", 120) : "AI drawing";
+    ImageRef mask(Image::create(IMAGE_BITMAP, sprite->width(), sprite->height()));
+    mask->clear(0);
+    if (method == "draw_shape") {
+      auto shape = text(params, "shape", 16);
+      require(shape == "line" || shape == "rectangle" || shape == "ellipse", "INVALID_PARAMS", "shape must be line, rectangle, or ellipse.");
+      int x1 = integer(params, "x1", 0, sprite->width() - 1), y1 = integer(params, "y1", 0, sprite->height() - 1);
+      int x2 = integer(params, "x2", 0, sprite->width() - 1), y2 = integer(params, "y2", 0, sprite->height() - 1);
+      bool filled = params.contains("filled") ? boolean(params, "filled") : false;
+      require(shape != "line" || !filled, "INVALID_PARAMS", "A line cannot be filled.");
+      if (shape == "line") doc::draw_line(mask.get(), x1, y1, x2, y2, 1);
+      else {
+        if (x1 > x2) std::swap(x1, x2);
+        if (y1 > y2) std::swap(y1, y2);
+        if (shape == "rectangle") {
+          if (filled) doc::fill_rect(mask.get(), x1, y1, x2, y2, 1);
+          else doc::draw_rect(mask.get(), x1, y1, x2, y2, 1);
+        } else {
+          if (filled) doc::fill_ellipse(mask.get(), x1, y1, x2, y2, 1);
+          else doc::draw_ellipse(mask.get(), x1, y1, x2, y2, 1);
+        }
+      }
+    } else if (method == "draw_stroke") {
+      require(params.contains("points") && params["points"].is_array() && !params["points"].empty() && params["points"].size() <= 1024,
+              "INVALID_PARAMS", "A stroke requires 1 to 1024 points.");
+      std::vector<gfx::Point> points;
+      for (const auto& point : params["points"])
+        points.emplace_back(integer(point, "x", 0, sprite->width() - 1), integer(point, "y", 0, sprite->height() - 1));
+      // Connected, one-pixel native lines. Brush engines/pressure are deferred.
+      doc::put_pixel(mask.get(), points.front().x, points.front().y, 1);
+      for (size_t i = 1; i < points.size(); ++i)
+        doc::draw_line(mask.get(), points[i - 1].x, points[i - 1].y, points[i].x, points[i].y, 1);
+    } else {
+      int x = integer(params, "x", 0, sprite->width() - 1), y = integer(params, "y", 0, sprite->height() - 1);
+      int tolerance = params.contains("tolerance") ? integer(params, "tolerance", 0, 255) : 0;
+      bool contiguous = params.contains("contiguous") ? boolean(params, "contiguous") : true;
+      // Flood against a full canvas of this cel ONLY, not the visible composite.
+      // Pixel sampling remains stable while the callback writes the mask.
+      ImageRef source(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+      source->clear(0);
+      if (auto cel = target->cel(frame)) doc::copy_image(source.get(), cel->image(), cel->x(), cel->y());
+      doc::algorithm::floodfill(source.get(), nullptr, x, y, sprite->bounds(), tolerance, contiguous, mask.get(),
+        [](int x1, int y, int x2, void* data) { doc::draw_hline(static_cast<Image*>(data), x1, y, x2, 1); });
     }
-    transaction.commit();
-    document->notifyGeneralUpdate();
+    ImageRef patch(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+    patch->clear(0);
+    gfx::Region region;
+    auto cel = target->cel(frame);
+    // Convert the mask to changed scanline spans. No-op draws do not consume
+    // undo history, and unselected pixels in an existing cel stay untouched.
+    for (int y = 0; y < sprite->height(); ++y) {
+      int start = -1;
+      for (int x = 0; x <= sprite->width(); ++x) {
+        bool changed = false;
+        if (x < sprite->width() && mask->getPixel(x, y)) {
+          auto old = cel ? doc::get_pixel(cel->image(), x - cel->x(), y - cel->y()) : 0;
+          // get_pixel returns -1 outside an image: outside a cropped cel is transparent.
+          if (!cel || !cel->bounds().contains(x, y)) old = 0;
+          changed = old != paint;
+          if (changed) patch->putPixel(x, y, paint);
+        }
+        if (changed && start < 0) start = x;
+        if (!changed && start >= 0) { region |= gfx::Region(gfx::Rect(start, y, x - start, 1)); start = -1; }
+      }
+    }
+    applyPatch(document, target, frame, patch, region, gfx::Point(0, 0), label);
+  }
+  Json editLayers(Document* document, const Json& params, const std::string& method) {
+    auto sprite = document->sprite();
+    Json result = Json::object();
+    if (method == "create_layer") {
+      require(int(sprite->countLayers()) < 128, "LIMIT_EXCEEDED", "At most 128 layers are supported.");
+      auto name = text(params, "name", 120);
+      auto type = params.contains("type") ? text(params, "type", 16) : "image";
+      require(type == "image" || type == "group", "INVALID_PARAMS", "Layer type must be image or group.");
+      Layer* parent = sprite->folder();
+      if (params.contains("parentId") && !params["parentId"].is_null()) parent = findLayer(sprite, integer(params, "parentId", 1, INT32_MAX));
+      require(parent->isFolder(), "INVALID_PARAMS", "parentId must identify a group.");
+      editable(parent);
+      auto folder = static_cast<LayerFolder*>(parent);
+      auto after = folder->getLastLayer();
+      if (params.contains("afterLayerId")) after = params["afterLayerId"].is_null() ? nullptr : findLayer(sprite, integer(params, "afterLayerId", 1, INT32_MAX));
+      require(!after || after->parent() == folder, "INVALID_PARAMS", "Insertion reference must be a sibling in the target group.");
+      require(after || !folder->getFirstLayer() || !folder->getFirstLayer()->isBackground(), "UNSUPPORTED_LAYER", "Cannot insert below a background layer.");
+      std::unique_ptr<Layer> layer(type == "image" ? static_cast<Layer*>(new LayerImage(sprite)) : static_cast<Layer*>(new LayerFolder(sprite)));
+      layer->setName(name);
+      auto id = layer->id();
+      Transaction transaction(UIContext::instance(), "AI create layer");
+      transaction.execute(new cmd::AddLayer(folder, layer.get(), after));
+      layer.release(); // Now owned by the sprite, or deleted by transaction rollback.
+      finish(transaction, document);
+      result["createdLayerId"] = id;
+    } else {
+      auto layer = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+      if (method == "update_layer") {
+        // Explicit unlocking is allowed, but not edits hidden inside an unlock.
+        editable(layer->parent());
+        bool hasProperties = params.contains("name") || params.contains("opacity") || params.contains("visible");
+        require(layer->isEditable() || !hasProperties, "LAYER_LOCKED", "Unlock the layer in a separate request before modifying its properties.");
+        require(hasProperties || params.contains("editable"), "INVALID_PARAMS", "Supply at least one layer property.");
+        auto name = params.contains("name") ? text(params, "name", 120) : layer->name();
+        int opacity = -1;
+        if (params.contains("opacity")) {
+          require(layer->isImage() && !layer->isBackground(), "UNSUPPORTED_LAYER", "Opacity changes require a transparent image layer.");
+          opacity = integer(params, "opacity", 0, 255);
+        }
+        auto flags = int(layer->flags());
+        for (auto entry : {std::make_pair("visible", LayerFlags::Visible), std::make_pair("editable", LayerFlags::Editable)})
+          if (params.contains(entry.first)) flags = boolean(params, entry.first) ? flags | int(entry.second) : flags & ~int(entry.second);
+        bool changed = name != layer->name() || flags != int(layer->flags()) ||
+          (opacity >= 0 && opacity != static_cast<LayerImage*>(layer)->opacity());
+        if (changed) {
+          Transaction transaction(UIContext::instance(), "AI update layer");
+          if (name != layer->name()) transaction.execute(new cmd::SetLayerName(layer, name));
+          if (flags != int(layer->flags())) transaction.execute(new cmd::SetLayerFlags(layer, LayerFlags(flags)));
+          if (opacity >= 0 && opacity != static_cast<LayerImage*>(layer)->opacity()) transaction.execute(new cmd::SetLayerOpacity(static_cast<LayerImage*>(layer), opacity));
+          finish(transaction, document);
+        }
+      } else if (method == "move_layer") {
+        editable(layer);
+        require(!layer->isBackground(), "UNSUPPORTED_LAYER", "Cannot restack a background layer.");
+        require(params.contains("afterLayerId"), "INVALID_PARAMS", "Supply afterLayerId, or null for the bottom of this group.");
+        auto after = params["afterLayerId"].is_null() ? nullptr : findLayer(sprite, integer(params, "afterLayerId", 1, INT32_MAX));
+        require(after != layer && (!after || after->parent() == layer->parent()), "INVALID_PARAMS", "Move reference must be a different sibling in the same group.");
+        require(after || !layer->parent()->getFirstLayer()->isBackground(), "UNSUPPORTED_LAYER", "Cannot move below a background layer.");
+        if (layer->getPrevious() != after) {
+          Transaction transaction(UIContext::instance(), "AI move layer");
+          transaction.execute(new cmd::MoveLayer(layer, after));
+          finish(transaction, document);
+        }
+      } else {
+        editable(layer);
+        if (layer->isFolder() && static_cast<LayerFolder*>(layer)->getLayersCount() > 0)
+          require(params.contains("recursive") && boolean(params, "recursive"), "GROUP_NOT_EMPTY", "Nonempty group removal requires recursive:true.");
+        int survivingImages = 0;
+        for (auto candidate : sprite->layers()) {
+          bool inside = false;
+          for (auto ancestor = candidate; ancestor; ancestor = ancestor->parent()) if (ancestor == layer) inside = true;
+          if (inside) { editable(candidate); require(!candidate->isBackground(), "UNSUPPORTED_LAYER", "Cannot remove a background layer."); }
+          else if (candidate->isImage()) ++survivingImages;
+        }
+        require(survivingImages > 0, "LAST_LAYER", "At least one image layer must remain.");
+        Transaction transaction(UIContext::instance(), "AI remove layer");
+        transaction.execute(new cmd::RemoveLayer(layer));
+        finish(transaction, document);
+      }
+    }
+    return result;
+  }
+  Json editFrames(Document* document, const Json& params, const std::string& method) {
+    auto sprite = document->sprite();
+    Json result = Json::object();
+    if (method == "set_frame_duration") {
+      int frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+      int duration = integer(params, "durationMs", 1, 65535);
+      if (sprite->frameDuration(frame) != duration) {
+        Transaction transaction(UIContext::instance(), "AI frame duration");
+        transaction.execute(new cmd::SetFrameDuration(sprite, frame, duration));
+        finish(transaction, document);
+      }
+      UIContext::instance()->activeEditor()->setFrame(frame);
+      return result;
+    }
+    require(sprite->getPalettes().size() == 1, "UNSUPPORTED_PALETTES", "Frame insertion/removal with per-frame palettes is not supported yet.");
+    for (auto layer : sprite->layers()) editable(layer);
+    if (method == "add_frame") {
+      require(sprite->totalFrames() < 256, "LIMIT_EXCEEDED", "At most 256 frames are supported.");
+      int index = integer(params, "index", 0, sprite->totalFrames());
+      int source = params.contains("copyFrom") ? integer(params, "copyFrom", 0, sprite->totalFrames() - 1) : -1;
+      int duration = params.contains("durationMs") ? integer(params, "durationMs", 1, 65535) : source >= 0 ? sprite->frameDuration(source) : 100;
+      Transaction transaction(UIContext::instance(), source >= 0 ? "AI duplicate frame" : "AI blank frame");
+      // Reuse the existing API for its undoable frame-tag range adjustments.
+      document->getApi(transaction).addEmptyFrame(sprite, index);
+      transaction.execute(new cmd::SetFrameDuration(sprite, index, duration));
+      if (source >= 0) {
+        if (source >= index) ++source;
+        for (auto layer : sprite->layers()) if (layer->isImage())
+          transaction.execute(new cmd::CopyCel(static_cast<LayerImage*>(layer), source, static_cast<LayerImage*>(layer), index, false));
+      }
+      finish(transaction, document);
+      UIContext::instance()->activeEditor()->setFrame(index);
+      result["insertedFrame"] = index;
+    } else {
+      require(sprite->totalFrames() > 1, "LAST_FRAME", "At least one frame must remain.");
+      int frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+      Transaction transaction(UIContext::instance(), "AI remove frame");
+      document->getApi(transaction).removeFrame(sprite, frame);
+      finish(transaction, document);
+      UIContext::instance()->activeEditor()->setFrame(std::min(frame, sprite->lastFrame()));
+    }
+    return result;
   }
   void save(Document* document, const Json& params) {
     auto path = filePath(params, true);
@@ -392,9 +673,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.2.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -447,18 +728,37 @@ private:
     // Check and mutate under the same lock, on the same UI tick.
     ContextWriter writer(ctx, 0);
     checkRevision(document, params);
+    SelectionGuard selection(document);
+    Json extra = Json::object();
     if (method == "set_pixels") {
       // setPixels owns its transaction but reuses this writer lock.
       setPixels(document, params);
+    } else if (method == "draw_shape" || method == "draw_stroke" || method == "flood_fill") {
+      draw(document, params, method);
+    } else if (method == "create_layer" || method == "update_layer" || method == "move_layer" || method == "remove_layer") {
+      extra = editLayers(document, params, method);
+    } else if (method == "add_frame" || method == "remove_frame" || method == "set_frame_duration") {
+      extra = editFrames(document, params, method);
     } else if (method == "undo" || method == "redo") {
       auto history = document->undoHistory();
       require(method == "undo" ? history->canUndo() : history->canRedo(), "NO_HISTORY", "No matching undo/redo state.");
+      auto position = method == "undo" ? history->nextUndoSpritePosition() : history->nextRedoSpritePosition();
       if (method == "undo") history->undo(); else history->redo();
+      auto sprite = document->sprite();
+      if (position.layerIndex() >= LayerIndex(0) && position.layerIndex() < sprite->countLayers())
+        ctx->activeEditor()->setLayer(sprite->indexToLayer(position.layerIndex()));
+      ctx->activeEditor()->setFrame(std::min(position.frame(), sprite->lastFrame()));
       document->generateMaskBoundaries(); document->notifyGeneralUpdate();
     } else if (method == "save") save(document, params);
     else throw BridgeError("METHOD_NOT_FOUND", "Unknown bridge method.");
+    selection.committed = true;
+    // Match native New Layer/New Frame behavior, including the user's existing
+    // auto-show preference. Visible timeline rows are safe for group layers.
+    if (method == "create_layer" || method == "add_frame") App::instance()->mainWindow()->popTimeline();
     update_screen_for_document(document);
-    return inspect(document);
+    auto result = inspect(document);
+    result.update(extra);
+    return result;
   }
   std::string handle(const std::string& line) {
     Json id = nullptr;

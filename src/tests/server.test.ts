@@ -14,6 +14,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
   const directory = await mkdtemp(path.join(process.cwd(), ".runtime/m-"));
   const socketPath = path.join(directory, "s");
   const methods: string[] = [];
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
   const native = netServer((socket) => {
     socket.setEncoding("utf8");
     let input = "";
@@ -24,6 +25,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const request = JSON.parse(input.slice(0, newline));
       input = input.slice(newline + 1);
       methods.push(request.method);
+      requests.push(request);
       let result: Record<string, unknown> = { ok: true };
       if (request.method === "status") result = { protocolVersion: 1, sessionId: "session", paused: true };
       else assert.equal(request.params.sessionId, "session");
@@ -43,7 +45,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 12);
+    assert.equal(tools.length, 22);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -59,6 +61,46 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const paused = await client.callTool({ name: "libresprite_set_pixels", arguments: { documentId: 1, expectedRevision: 1, layerId: 1, frame: 0, pixels: [{ x: 0, y: 0, r: 1, g: 2, b: 3, a: 255 }] } });
     assert.equal(paused.isError, true);
     assert.equal(JSON.parse((paused.content as Array<{ text: string }>)[0]!.text).code, "PAUSED");
+    const target = { documentId: 1, expectedRevision: 1 };
+    const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
+    const valid = [
+      ["create_layer", { ...target, name: "Ink" }],
+      ["update_layer", { ...target, layerId: 1, visible: false, editable: false, opacity: 0 }],
+      ["move_layer", { ...target, layerId: 1, afterLayerId: null }],
+      ["remove_layer", { ...target, layerId: 1 }],
+      ["add_frame", { ...target, index: 0, copyFrom: 0, durationMs: 65535 }],
+      ["remove_frame", { ...target, frame: 0 }],
+      ["set_frame_duration", { ...target, frame: 0, durationMs: 75 }],
+      ["draw_shape", { ...paint, shape: "rectangle", x1: 1, y1: 2, x2: 5, y2: 6 }],
+      ["draw_stroke", { ...paint, points: [{ x: 0, y: 0 }] }],
+      ["flood_fill", { ...paint, x: 1, y: 2 }],
+    ] as const;
+    for (const [method, args] of valid) {
+      const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
+      assert.equal(result.isError, undefined, method);
+      assert.equal(methods.at(-1), method);
+    }
+    assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
+    assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
+    assert.equal(requests.find((item) => item.method === "draw_shape")?.params.filled, false);
+    assert.equal(requests.find((item) => item.method === "flood_fill")?.params.contiguous, true);
+    assert.equal(requests.find((item) => item.method === "flood_fill")?.params.tolerance, 0);
+    const rejected = [
+      ["create_layer", { ...target, name: "", type: "unknown" }],
+      ["update_layer", { ...target, layerId: 1, opacity: 256 }],
+      ["move_layer", { ...target, layerId: 1 }],
+      ["remove_layer", { ...target, layerId: 1, recursive: "true" }],
+      ["add_frame", { ...target, index: 256 }],
+      ["set_frame_duration", { ...target, frame: 0, durationMs: 65536 }],
+      ["draw_shape", { ...paint, shape: "circle", x1: 0, y1: 0, x2: 1, y2: 1 }],
+      ["draw_stroke", { ...paint, points: [] }],
+      ["flood_fill", { ...paint, x: -1, y: 0 }],
+    ] as const;
+    for (const [method, args] of rejected) {
+      const count = methods.length;
+      assert.equal((await client.callTool({ name: `libresprite_${method}`, arguments: args })).isError, true, method);
+      assert.equal(methods.length, count, "Invalid tool arguments must not reach the native bridge.");
+    }
   } finally {
     application.close();
     await client.close();

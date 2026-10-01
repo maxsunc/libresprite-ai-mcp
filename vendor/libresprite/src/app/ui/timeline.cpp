@@ -968,6 +968,14 @@ void Timeline::onPaint(ui::PaintEvent& ev)
       if (!clip)
         continue;
 
+      // Groups have no cel vector. Show empty cells for their rows rather than
+      // interpreting a LayerFolder's storage as a LayerImage (undefined behavior).
+      if (!m_layers[layer]->isImage()) {
+        for (frame=first_frame; frame<=last_frame; ++frame)
+          drawCel(g, layer, frame, nullptr, nullptr);
+        continue;
+      }
+
       // Get the first CelIterator to be drawn (it is the first cel with cel->frame >= first_frame)
       LayerImage* layerPtr = static_cast<LayerImage*>(m_layers[layer]);
       data.begin = layerPtr->getCelBegin();
@@ -1457,7 +1465,7 @@ void Timeline::drawLayer(ui::Graphics* g, LayerIndex layerIdx)
 void Timeline::drawCel(ui::Graphics* g, LayerIndex layerIndex, frame_t frame, Cel* cel, DrawCelData* data)
 {
   SkinTheme::Styles& styles = skinTheme()->styles;
-  LayerImage* layer = static_cast<LayerImage*>(m_layers[layerIndex]);
+  Layer* layer = m_layers[layerIndex];
   Image* image = (cel ? cel->image(): NULL);
   bool is_hover = (m_hot.part == PART_CEL &&
     m_hot.layer == layerIndex &&
@@ -1519,7 +1527,7 @@ void Timeline::drawCel(ui::Graphics* g, LayerIndex layerIndex, frame_t frame, Ce
   drawPart(g, bounds, NULL, style, is_active, is_hover);
 
   // Draw decorators to link the activeCel with its links.
-  if (data->activeIt != data->end)
+  if (data && data->activeIt != data->end)
     drawCelLinkDecorators(g, bounds, cel, frame, is_active, is_hover, data);
 }
 
