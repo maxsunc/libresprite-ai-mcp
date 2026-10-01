@@ -1,0 +1,210 @@
+// Aseprite
+// Copyright (C) 2001-2016  David Capello
+//
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License version 2 as
+// published by the Free Software Foundation.
+
+#pragma once
+
+#include "app/tools/point_shape.h"
+#include "app/tools/tool_loop.h"
+#include "doc/brush.h"
+#include "doc/compressed_image.h"
+
+namespace app::tools {
+
+class NonePointShape : public PointShape {
+public:
+  void transformPoint(ToolLoop* loop, int x, int y, float pressure) override {
+    // Do nothing
+  }
+
+  void getModifiedArea(ToolLoop* loop, int x, int y, gfx::Rect& area) override {
+    // Do nothing
+  }
+};
+
+class PixelPointShape : public PointShape {
+public:
+  bool isPixel() override { return true; }
+
+  void transformPoint(ToolLoop* loop, int x, int y, float pressure) override {
+    doInkHline(x, y, x, loop);
+  }
+
+  void getModifiedArea(ToolLoop* loop, int x, int y, gfx::Rect& area) override {
+    area = gfx::Rect(x, y, 1, 1);
+  }
+};
+
+class BrushPointShape : public PointShape {
+  doc::Brush* m_brush;
+  doc::CompressedImage m_compressedImage;
+  bool m_firstPoint;
+  int m_brushGen;
+
+public:
+
+  void preparePointShape(ToolLoop* loop) override {
+    m_brush = loop->getBrush();
+    m_brushGen = !m_brush->gen();
+    m_firstPoint = true;
+  }
+
+  void transformPoint(ToolLoop* loop, int x, int y, float pressure) override {
+    auto srcImage = m_brush->image(pressure);
+    if (!srcImage)
+      return; // brush size == 0
+
+    if (m_brushGen != m_brush->gen()) {
+      m_brushGen = m_brush->gen();
+      m_compressedImage.update(srcImage, false);
+    }
+
+    x += m_brush->scaledBounds().x;
+    y += m_brush->scaledBounds().y;
+
+    if (m_firstPoint) {
+      m_firstPoint = false;
+      if (m_brush->type() == kImageBrushType) {
+        if (m_brush->pattern() == BrushPattern::ALIGNED_TO_DST ||
+            m_brush->pattern() == BrushPattern::PAINT_BRUSH) {
+          m_brush->setPatternOrigin(gfx::Point(x, y));
+        }
+      }
+    }
+    else {
+      if (m_brush->type() == kImageBrushType &&
+          m_brush->pattern() == BrushPattern::PAINT_BRUSH) {
+        m_brush->setPatternOrigin(gfx::Point(x, y));
+      }
+    }
+
+    for (auto& scanline : m_compressedImage) {
+      int u = x+scanline.x;
+      doInkHline(u, y+scanline.y, u+scanline.w-1, loop);
+    }
+  }
+
+  void getModifiedArea(ToolLoop* loop, int x, int y, gfx::Rect& area) override {
+    area = m_brush->bounds();
+    area.x += x;
+    area.y += y;
+  }
+
+};
+
+class FloodFillPointShape : public PointShape {
+public:
+  bool isFloodFill() override { return true; }
+
+  void transformPoint(ToolLoop* loop, int x, int y, float pressure) override {
+    doc::algorithm::floodfill(
+      loop->getFloodFillSrcImage(),
+      (loop->useMask() ? loop->getMask(): nullptr),
+      x, y,
+      floodfillBounds(loop, x, y),
+      loop->getTolerance(),
+      loop->getContiguous(),
+      loop, (AlgoHLine)doInkHline);
+  }
+
+  void getModifiedArea(ToolLoop* loop, int x, int y, gfx::Rect& area) override {
+    area = floodfillBounds(loop, x, y);
+  }
+
+private:
+  gfx::Rect floodfillBounds(ToolLoop* loop, int x, int y) const {
+    gfx::Rect bounds = loop->sprite()->bounds();
+    bounds &= loop->getFloodFillSrcImage()->bounds();
+
+    // Limit the flood-fill to the current tile if the grid is visible.
+    if (loop->getStopAtGrid()) {
+      gfx::Rect grid = loop->getGridBounds();
+      if (!grid.isEmpty()) {
+        div_t d, dx, dy;
+
+        dx = div(grid.x, grid.w);
+        dy = div(grid.y, grid.h);
+
+        if (dx.rem > 0) dx.rem -= grid.w;
+        if (dy.rem > 0) dy.rem -= grid.h;
+
+        d = div(x-dx.rem, grid.w);
+        x = dx.rem + d.quot*grid.w;
+
+        d = div(y-dy.rem, grid.h);
+        y = dy.rem + d.quot*grid.h;
+
+        bounds = bounds.createIntersection(gfx::Rect(x, y, grid.w, grid.h));
+      }
+    }
+
+    return bounds;
+  }
+};
+
+class SprayPointShape : public PointShape {
+  BrushPointShape m_subPointShape;
+  float m_pointRemainder = 0;
+
+public:
+
+  bool isSpray() override { return true; }
+
+  void preparePointShape(ToolLoop* loop) override {
+    m_subPointShape.preparePointShape(loop);
+  }
+
+  void transformPoint(ToolLoop* loop, int x, int y, float pressure) override {
+    int spray_width = loop->getSprayWidth();
+    int spray_speed = loop->getSpraySpeed();
+
+    // The number of points to spray is proportional to the spraying area, and
+    // we calculate it as a float to handle very low spray rates properly.
+    float points_to_spray = (spray_width * spray_width / 4.0f) * spray_speed / 100.0f;
+
+    // We add the fractional points from last time to get
+    // the total number of points to paint this time.
+    points_to_spray += m_pointRemainder;
+    int integral_points = (int)points_to_spray;
+
+    // Save any leftover fraction of a point for next time.
+    m_pointRemainder = points_to_spray - integral_points;
+    ASSERT(m_pointRemainder >= 0 && m_pointRemainder < 1.0f);
+
+    fixmath::fixed angle, radius;
+
+    for (int c=0; c<integral_points; c++) {
+
+#if RAND_MAX <= 0xffff
+      // In Windows, rand() has a RAND_MAX too small
+      angle = fixmath::itofix(rand() * 255 / RAND_MAX);
+      radius = fixmath::itofix(rand() * spray_width / RAND_MAX);
+#else
+      angle = rand();
+      radius = rand() % fixmath::itofix(spray_width);
+#endif
+
+      int u = fixmath::fixtoi(fixmath::fixmul(radius, fixmath::fixcos(angle)));
+      int v = fixmath::fixtoi(fixmath::fixmul(radius, fixmath::fixsin(angle)));
+      m_subPointShape.transformPoint(loop, x+u, y+v, pressure);
+    }
+  }
+
+  void getModifiedArea(ToolLoop* loop, int x, int y, gfx::Rect& area) override {
+    int spray_width = loop->getSprayWidth();
+    Point p1(x-spray_width, y-spray_width);
+    Point p2(x+spray_width, y+spray_width);
+
+    gfx::Rect area1;
+    gfx::Rect area2;
+    m_subPointShape.getModifiedArea(loop, p1.x, p1.y, area1);
+    m_subPointShape.getModifiedArea(loop, p2.x, p2.y, area2);
+
+    area = area1.createUnion(area2);
+  }
+};
+
+} // namespace app::tools

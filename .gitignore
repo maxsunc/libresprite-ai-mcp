@@ -1,0 +1,17 @@
+# Local upstream checkout used to prepare source imports.
+/.cache/
+
+# Out-of-tree native builds and generated application bundles.
+/build/
+/dist/
+*.gch
+
+# Future MCP server dependencies.
+/node_modules/
+
+# Python helper caches.
+__pycache__/
+*.pyc
+
+# macOS filesystem metadata.
+.DS_Store

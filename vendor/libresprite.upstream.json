@@ -1,0 +1,37 @@
+{
+  "repository": "https://github.com/LibreSprite/LibreSprite.git",
+  "ref": "v1.2",
+  "commit": "5cb089be32f56b4ae559ae51f0c5666049f41bca",
+  "import_method": "Tracked source files with dependency submodules materialized as ordinary files",
+  "excluded_paths": [
+    "src/config.h.gch"
+  ],
+  "file_count": 1594,
+  "submodules": [
+    {
+      "path": "src/clip",
+      "commit": "94693e2414a2c69a8ca16f065240c80a94cc6221",
+      "repository": "https://github.com/aseprite/clip.git"
+    },
+    {
+      "path": "src/flic",
+      "commit": "876ef60df5fec606f8eb0638ee893e4967db4673",
+      "repository": "https://github.com/aseprite/flic.git"
+    },
+    {
+      "path": "src/undo",
+      "commit": "f39b188e29d0f9adaa49c8705c0f492939d967a9",
+      "repository": "https://github.com/aseprite/undo.git"
+    },
+    {
+      "path": "third_party/duktape",
+      "commit": "6f715553e706b61e611aa4ae8e6fe90626800dae",
+      "repository": "https://github.com/libresprite/duktape.git"
+    },
+    {
+      "path": "third_party/simpleini",
+      "commit": "c94997d4d64394833e4b9d21f4573c66600c9a9a",
+      "repository": "https://github.com/aseprite/simpleini.git"
+    }
+  ]
+}

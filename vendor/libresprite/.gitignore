@@ -1,0 +1,26 @@
+*.a
+*.o
+*.lib
+*.obj
+*.pdb
+*.dll
+*.ilk
+*.suo
+*.exe
+*.exe.manifest
+*.log
+*.res
+*.vs
+
+# CMake output
+build
+
+# Snap related
+/parts
+/prime
+/stage
+/*.snap
+/snap/.snapcraft/
+/.cache/
+*~
+/android/
