@@ -124,22 +124,33 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_draw_shape` | Native line, rectangle, or ellipse |
 | `libresprite_draw_stroke` | Connected one-pixel polyline |
 | `libresprite_flood_fill` | Contiguous fill or all matching colors in a target cel |
+| `libresprite_update_cel` | Atomic cel position and/or opacity |
+| `libresprite_transform_cel` | Whole-cel flips and exact quarter-turn/180° rotations |
+| `libresprite_unlink_cel` | Make a native linked cel independent, explicitly |
+| `libresprite_set_selection` | Rectangle/ellipse mask replace/add/subtract/intersect |
+| `libresprite_modify_selection` | Select all, clear, or invert within the canvas |
+| `libresprite_render_selection` | Read-only cyan selection overlay or white mask PNG |
+| `libresprite_fill_selection` | Replace/erase selected RGBA pixels in one cel |
+| `libresprite_translate_selection` | Atomic selected-pixel move/copy plus mask movement |
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **34 tools** in server/bridge version **0.4.0**. Rebuild the editor
+There are **42 tools** in server/bridge version **0.5.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
 provide those fields; a missing new method requires rebuilding/relaunching,
 not blindly retrying it.
+Restart/refresh the MCP server in your client after TypeScript upgrades too:
+already-running stdio servers retain their original tool schemas/catalog.
 
 ## Layers, drawing, and animation
 
 Every mutating tool below requires the active `documentId`, `expectedRevision`,
 and a resumed bridge. Layer/frame operations use native undo transactions just
 like pixel edits. Inspection now also reports `activeLayerId` and `activeFrame`;
-changing UI selection alone does not change the document revision.
+changing the active UI layer/frame alone does not change the document revision.
+Changing the pixel selection mask does.
 
 ### Layers
 
@@ -170,7 +181,7 @@ changing UI selection alone does not change the document revision.
   pixel wide; rasterization uses the editor's native primitives.
 - `draw_stroke`: connect 1–1,024 `{x,y}` points with native one-pixel lines as a
   single atomic undo step. A one-point stroke draws one pixel. Brush width,
-  pressure, smoothing, and selection-aware brush behavior are not added yet.
+  pressure and smoothing are not added yet.
 - `flood_fill`: use seed `x,y`, `tolerance` (0–255, default 0), and `contiguous`
   (default true). It samples **only the target cel**, with transparent pixels
   filling the rest of its canvas, **not the visible multi-layer composite**.
@@ -179,8 +190,14 @@ changing UI selection alone does not change the document revision.
 - All use explicit `layerId`, zero-based `frame`, and a `color` object containing
   `r,g,b,a`. Colors replace pixels rather than alpha-blending; alpha 0 erases.
   Existing pixels outside the shape/region are preserved, including cropped cels.
-  Selection masks are deliberately ignored. Drawing requires an editable,
-  transparent RGBA image layer and an unlinked cel. Geometry/fill/stroke requests
+  Selection masks are ignored **by default**, retaining previous behavior.
+  `respectSelection: true` requires a visible nonempty mask and clips painting
+  to its selected pixels (also available for `set_pixels`). For contiguous flood
+  fill the mask is a traversal barrier; non-contiguous fill only replaces selected
+  matches. An unselected seed is a no-op in either mode. All supplied pixel/point
+  coordinates still validate even if outside the selection. Drawing requires an
+  editable, transparent RGBA image layer and an unlinked, independent-image cel.
+  Geometry/fill/stroke requests
   that do not change any stored pixels do not add undo history.
 
 For example, draw an outlined rectangle, then fill its interior:
@@ -220,6 +237,126 @@ Render afterwards to inspect the result.
 - Structural frame edits refuse locked layers and sprites with per-frame palette
   changes: upstream does not yet shift those palettes safely. They are not
   silently flattened or discarded. Duration-only edits remain available.
+
+## Cel transforms and selection-based editing
+
+### Cel properties, whole-image transforms, and unlinking
+
+`libresprite_update_cel` requires explicit `layerId`/`frame` and at least one
+of `x`, `y`, or `opacity`. Positions are signed native-file coordinates,
+**−32,768 through 32,767**; opacity is 0–255. The update is one native undo
+transaction, without changing any image pixels. Moving content outside the canvas
+does **not** discard it. Render/export only shows the canvas intersection.
+
+`libresprite_transform_cel` takes one `operation`:
+
+- `flip_horizontal` / `flip_vertical`: native raster flips.
+- `rotate_cw` / `rotate_ccw`: exact 90° integer pixel permutations.
+- `rotate_180`: an exact 180° permutation.
+
+These transform the **stored cel image**, including transparent padding and
+off-canvas pixels, not the entire sprite canvas or the selected region. Quarter
+turns swap image width/height; the cel's **top-left position and opacity stay
+fixed**, rather than centering it. No interpolation, palette remapping, or
+automatic clipping occurs. Inspect cel bounds before choosing an operation:
+a new missing-cel drawing patch may initially span the canvas, while a subsequent
+native patch trims transparent edges. Whole-image transforms currently require
+cel dimensions of at most 1,024×1,024.
+
+Properties and transforms work in RGBA, indexed, and grayscale modes. They
+refuse groups, background layers, locked layers/ancestors, missing cels, and
+native linked cels. Image transforms additionally refuse unusual separate cels
+sharing one image object. Identical properties/symmetric image transforms are
+no-ops that preserve revision/history and GUI selection. Changed requests
+select the explicit target layer/frame for visible feedback.
+
+`libresprite_unlink_cel` explicitly clones one native linked cel's image/data,
+preserving pixels, position, opacity, and user data. Other linked frames are
+unchanged, and native undo restores the link. Already-independent cels are
+no-ops; missing/locked/background targets are refused. All these mutations need
+the active document, current revision, and resumed bridge.
+
+Large off-canvas coordinates can make a small canvas patch require a huge
+temporary union image. The bridge now refuses a union over **32 MiB** (or one
+that exceeds total sprite image working data) **before** native allocation, not
+only after a transaction has run. Bring a far-away cel nearer before editing its
+pixels through canvas-based tools; refusals never discard off-canvas content.
+
+### Visible document-wide masks
+
+`libresprite_set_selection` takes `shape: "rectangle" | "ellipse"` (default
+rectangle), inclusive `x1,y1,x2,y2` canvas endpoints (reversed corners allowed),
+and `mode: "replace" | "add" | "subtract" | "intersect"` (default replace).
+Shapes use native integer rasterization. Combination uses the **actual bitmap**,
+not just bounding rectangles, and clips the result to the canvas. Hidden/
+deselected masks count as empty; subtract/intersect with no visible mask remains
+empty. Empty results clear the visible selection.
+
+`libresprite_modify_selection` accepts `action: "all" | "none" | "invert"`.
+All selects the canvas; none clears the active selection; invert selects the
+complement inside the canvas. Inverting no visible selection selects all.
+
+Selections are **document-wide**, shared across frames/layers. They do not
+silently switch GUI frame/layer and do not edit image pixels or saved/modified
+state. Changes still use native selection undo transactions and advance revision;
+identical masks do not consume history or clear redo. Revisions fingerprint mask
+bits, not just their bounding box/pixel count, so manual mask changes invalidate
+stale operations too. Selection is a live editing state, not a promised persistent
+selection in saved native files. Undo history after reopening is not retained.
+
+Inspection includes `selection` with `visible`, `x`, `y`, `width`, `height`, and
+`selectedPixels`. A hidden native mask may still have bounds/count for reselecting;
+only a **visible** mask can authorize selected pixel operations. Mask bitmaps are
+limited to 1,048,576 pixels. Failed transactions restore even retained hidden
+mask bits/visibility/transformation state along with GUI layer/frame selection.
+
+### Selection feedback and pixel operations
+
+`libresprite_render_selection` requires `documentId`/`frame`, optional `scale`
+(1–16), `mode: "overlay" | "mask"` (default overlay), and `opacity` (0–255,
+default 96). Overlay highlights selected pixels cyan over the native composite;
+opacity 0 is the ordinary frame unchanged. Mask mode is opaque white selected
+pixels and transparent elsewhere. With no visible selection, it returns the
+ordinary frame or empty mask. It is read-only, works paused/inactive, and is
+bounded to 1,048,576 output pixels. Ordinary render/export never burns the mask
+overlay into sprite pixels.
+
+`libresprite_fill_selection` replaces the selected pixels of an explicit RGBA
+image `layerId`/`frame` with `color`; alpha 0 erases. It does not blend colors or
+sample the layer composite. The mask and all unselected/off-canvas pixels are
+preserved. A missing cel can be created if pixels actually change. Identical
+pixels are a no-op. **Absent or hidden selection is `NO_SELECTION`, never a
+whole-cel clearing fallback.**
+
+`libresprite_translate_selection` takes `layerId`/`frame`, integer `dx`/`dy`
+(−1,023 to 1,023), and optional `copy` (default false):
+
+- Move clears selected source pixels; copy leaves them alone.
+- Both snapshot raw source pixels before writing, so overlapping moves/copies
+  are safe. Destination selected pixels **replace** colors, including transparent
+  source pixels; copying a selected transparent hole erases the destination there.
+- The selection bitmap moves too. One native undo step restores **pixels and
+  mask together**. A blank-pixel move that only changes the mask preserves saved
+  state. Zero displacement is a no-op.
+- Source mask and destination bounds must be wholly inside the canvas. Outside
+  masks/destinations are refused (`SELECTION_OUTSIDE_CANVAS` / `OUTSIDE_CANVAS`)
+  rather than clipping or silently losing pixels.
+
+These selected pixel operations require the active document/current revision/
+resumed bridge. They select changed target layer/frame, are RGBA-only for now,
+and refuse locked/background/linked/shared-image targets. For indexed/grayscale
+sprites, whole-cel transforms/properties remain available but pixel selection
+painting/remapping is not exposed.
+
+```json
+{
+  "documentId": 3, "expectedRevision": 18, "layerId": 5, "frame": 0,
+  "dx": 4, "dy": 0, "copy": true
+}
+```
+
+First set/render a selection, then use its fresh revision for this copy request.
+Render the result and continue from the newly returned revision.
 
 ## Palettes and animation tags
 
@@ -476,7 +613,8 @@ supported—save `.ase` to retain the editable sprite.
   layer, and frame identifiers. The bridge never silently switches documents
   for an edit. Create/open visibly select the new document.
 - An edit, save, export, undo, or redo requires the latest revision. Revisions are
-  derived from metadata, native history, and actual image bytes. A manual edit
+  derived from metadata, native history, actual image bytes, and selection bitmap
+  bits/visibility. A manual edit
   observed before a request causes `STALE_REVISION`. IDs/revisions are scoped
   to a session, not persistent file identifiers.
 - Drawing gestures, playback, transforms, captured mouse input, and modal
@@ -512,8 +650,9 @@ supported—save `.ase` to retain the editable sprite.
   groups/children**, 32 open documents, and 32 MiB of image working data / input
   file size. Animated export has a separate 8,388,608-total-pixel/32-MiB budget.
 - Pixel batches: 1–16,384 pixels, transparent **RGBA image layers only**.
-  Background/locked layers and linked cels are refused. Colors replace pixels,
-  duplicates use the last supplied color, and selection masks are not applied.
+  Background/locked layers and linked/shared-image cels are refused. Colors
+  replace pixels, duplicates use the last supplied color, and selection masks
+  are ignored unless `respectSelection: true` explicitly enables them.
 - Palette index remapping, color-mode conversion, brush engines, cross-group
   reparenting, packed/trimmed sprite sheets, animated-asset browsing, and APNG
   editing/round-trip are not exposed yet. Native `.ase`, full-canvas PNG sheets,
@@ -546,7 +685,7 @@ deduplication, pause/reconnect, and path boundaries. It also runs the cases in
 `scripts/bridge_workflow_cases.py`: geometry/fill/strokes, properties/locks,
 group traversal/copy/deletion/save/reopen, blank/independent frame insertion,
 durations/deletion/undo, tag ranges, and unsupported-palette guards.
-All ten new mutations are checked against session/pause/revision gates, and
+All ten layer/frame/drawing mutations are checked against session/pause/revision gates, and
 an oversized frame copy must roll back its data, saved state, and selection.
 Linked-cel and background restrictions have explicit regression cases too.
 `scripts/bridge_preview_cases.py` adds directory pagination/limits/escapes,
@@ -560,6 +699,12 @@ GIF alpha/quantized timing, and APNG full-canvas pixels/chunks/delays/order/loop
 LibreSprite. The Python suite also compiles the GUI-independent APNG assembler
 with a C++17 compiler and zlib and tests malformed input, multi-IDAT PNGs,
 frame/duration/dimension limits, and the encoded-byte ceiling without a GUI.
+`scripts/bridge_selection_cases.py` adds nonsquare whole-cel transform pixel
+checks in all three color modes, signed/off-canvas positions and opacity,
+explicit unlink/undo/rollback, bitmap combinations and saved-state-preserving
+selection undo, selection-aware drawing/fill barriers, overlap-safe pixel+mask
+moves/copies, transparent replacement, all new mutation safety gates, and
+pre-allocation patch/preview limits.
 Do not interact with that test window while it runs. The tests do not establish
 cross-platform GUI correctness or unlimited hostile-input resilience.
 
@@ -583,6 +728,9 @@ previews the saved asset without opening a tab, and writes an onion-skin PNG.
 It adds editable swatches and a native tag, exercises tag undo/redo, and exports
 looping GIF/APNG files plus separate demo-owned metadata JSON files. The demo
 saves returned metadata as its own separate sidecars (not an atomic bundle).
+It also copies selected sparkle pixels with pixel+mask undo/redo, writes
+`mushroom-selection.png` feedback, fills selected pixels, transforms a cel, and
+updates another cel's opacity before the exact native save/reopen check.
 Agent editing is paused at the end; you can still use LibreSprite's
 play button to preview the animation manually.
 
@@ -620,6 +768,16 @@ options; its native codec doesn't see or mutate the editor's document settings.
 The APNG assembler in `app/automation/apng.*` is GUI-independent and reuses native
 PNG image data rather than adding a separate image compression dependency.
 
+Cel position/opacity and unlinking use native `SetCelPosition`, `SetCelOpacity`,
+and `UnlinkCel` commands. Whole-image transforms prepare an independent image
+off-document and reuse `ReplaceImage` for native undo/redo. Selection masks use
+`SetMask` in `DoesntModifyDocument` transactions; selected pixel translations
+prepare a stable off-document snapshot and commit `PatchCel` plus `SetMask` in
+one transaction. Before `PatchCel` can crop/grow a far-away cel, its union image
+and total image working data are checked to avoid an unbounded intermediate
+allocation. A failed operation restores retained hidden mask/visibility and
+transformation state, in addition to the active layer/frame.
+
 Two upstream fixes from the layer/frame milestone remain in this build:
 
 - Frame insertion at index 0 no longer reads a duration at index -1.
@@ -642,7 +800,7 @@ and its license under `vendor/`.
 
 ### Verified milestone
 
-On the development Apple Silicon Mac, the native build, seven Python helper
+On the development Apple Silicon Mac, the native build, eleven Python helper
 tests, nine TypeScript/MCP tests, the baseline CLI smoke test, and the real GUI
 bridge test pass. The visible four-frame mushroom animation demonstration also
 passed end to end through MCP stdio, including grouped layers, independent cels,
@@ -651,5 +809,11 @@ native save/reopen. Asset/preview/PNG tools also pass the real MCP demo, includi
 byte-identical contact-sheet/export PNGs, detached thumbnails, and native onion
 previews while paused. Palette/tag/GIF/APNG tools pass expanded real-GUI and
 real-MCP tests; independent decoding of both animated demo exports confirms
-all four frames are pixel-exact with expected timing/looping. Linux support is
+all four frames are pixel-exact with expected timing/looping. Cel/selection
+operations pass expanded disposable-GUI regressions and the real MCP animation
+demo, including copied pixels and mask undo/redo, cel transforms/opacity, native
+save/reopen, and unchanged pause/session/revision safeguards. Direct chat-tool
+launch/connect/create/draw/render/undo/redo/save/export is also verified in a
+separate agent-owned paused window, with an independently pixel-checked export.
+Linux support is
 implemented but has not been tested here.

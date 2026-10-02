@@ -29,7 +29,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       let result: Record<string, unknown> = { ok: true };
       if (request.method === "status") result = { protocolVersion: 1, sessionId: "session", paused: true };
       else assert.equal(request.params.sessionId, "session");
-      if (["render", "preview_asset", "contact_sheet", "render_onion_skin"].includes(request.method)) {
+      if (["render", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(request.method)) {
         assert.equal(request.params.scale, 1);
         result = { revision: 2, pngBase64: "iVBORw0KGgo=", frame: 0 };
       }
@@ -45,7 +45,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 34);
+    assert.equal(tools.length, 42);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -86,15 +86,23 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["update_tag", { ...target, tagId: 1, direction: "pingpong" }],
       ["remove_tag", { ...target, tagId: 1 }],
       ["export_animation", { ...target, path: "walk.apng", format: "apng", frames: [2, 0, 2] }],
+      ["update_cel", { ...paint, x: -32768, y: 32767, opacity: 128 }],
+      ["transform_cel", { ...paint, operation: "rotate_cw" }],
+      ["unlink_cel", { ...paint }],
+      ["set_selection", { ...target, x1: 1, y1: 2, x2: 5, y2: 6 }],
+      ["modify_selection", { ...target, action: "invert" }],
+      ["render_selection", { documentId: 1, frame: 0 }],
+      ["fill_selection", { ...paint }],
+      ["translate_selection", { ...paint, dx: -1, dy: 2 }],
     ] as const;
     for (const [method, args] of valid) {
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
       assert.equal(result.isError, undefined, method);
       assert.equal(methods.at(-1), method);
-      const preview = ["preview_asset", "contact_sheet", "render_onion_skin"].includes(method);
+      const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
@@ -114,6 +122,15 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.loop, true);
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.scale, 1);
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.overwrite, false);
+    for (const method of ["set_pixels", "draw_shape", "draw_stroke", "flood_fill"]) assert.equal(requests.find((item) => item.method === method)?.params.respectSelection, false);
+    assert.equal(requests.find((item) => item.method === "set_selection")?.params.shape, "rectangle");
+    assert.equal(requests.find((item) => item.method === "set_selection")?.params.mode, "replace");
+    assert.equal(requests.find((item) => item.method === "render_selection")?.params.mode, "overlay");
+    assert.equal(requests.find((item) => item.method === "render_selection")?.params.opacity, 96);
+    assert.equal(requests.find((item) => item.method === "translate_selection")?.params.copy, false);
+    const selectionAware = await client.callTool({ name: "libresprite_draw_stroke", arguments: { ...paint, points: [{ x: 1, y: 2 }], respectSelection: true } });
+    assert.equal(selectionAware.isError, undefined);
+    assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
       ["create_layer", { ...target, name: "", type: "unknown" }],
       ["update_layer", { ...target, layerId: 1, opacity: 256 }],
@@ -137,6 +154,15 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["update_tag", { ...target, tagId: 1, color: { ...paint.color, a: 128 } }],
       ["remove_tag", { ...target, tagId: 0 }],
       ["export_animation", { ...target, path: "walk.gif", format: "mp4" }],
+      ["update_cel", { ...paint, x: -32769 }],
+      ["transform_cel", { ...paint, operation: "rotate_45" }],
+      ["unlink_cel", { ...target, layerId: 1, frame: 256 }],
+      ["set_selection", { ...target, x1: -1, y1: 0, x2: 5, y2: 5 }],
+      ["modify_selection", { ...target, action: "grow" }],
+      ["render_selection", { documentId: 1, frame: 0, mode: "rgba" }],
+      ["fill_selection", { ...paint, color: { ...paint.color, a: 300 } }],
+      ["translate_selection", { ...paint, dx: -1024, dy: 0 }],
+      ["draw_stroke", { ...paint, points: [{ x: 0, y: 0 }], respectSelection: "yes" }],
     ] as const;
     for (const [method, args] of rejected) {
       const count = methods.length;

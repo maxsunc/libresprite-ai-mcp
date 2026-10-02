@@ -6,8 +6,9 @@ will let AI agents inspect, draw, and animate sprites in the visible application
 ## Current scope
 
 The reproducible native baseline and live bridge/MCP integration are implemented,
-including layer management, drawing primitives, palettes/tags, animation previews,
-asset browsing, and PNG/sprite-sheet/GIF/APNG export. This is an early development
+including layer management, drawing primitives, cel transforms, selections,
+palettes/tags, animation previews, asset browsing, and PNG/sprite-sheet/GIF/APNG
+export. This is an early development
 integration, not yet a full artist workflow.
 
 The baseline has been built on Apple Silicon and passes CLI, scripting,
@@ -51,11 +52,13 @@ automation flags remains disconnected from agents.
 Available now: document creation/opening, inspection, rendered PNG feedback,
 undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
 frames and timing, undo/redo, and native save.
+Cel position/opacity, flips/quarter-turns, explicit unlinking, native selection
+masks, selection-aware drawing, and overlap-safe selection moves/copies are supported.
 
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **34 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **42 tools**, and limitations.
 
 ```sh
 npm test
@@ -65,7 +68,7 @@ python3 scripts/test-live-bridge.py
 The integration test launches its own disposable GUI instance. A visible MCP
 demo is available with `node scripts/demo-live.mjs` after both builds.
 Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo
-with editable swatches/tags and animated exports.
+with cel transforms, selection copy/fill feedback, editable swatches/tags, and animated exports.
 Already-running editor windows must be restarted to pick up native updates.
 
 ## Source and licensing

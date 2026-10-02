@@ -1,5 +1,24 @@
 # Development milestones
 
+## 0.5.0 — Cel transforms and selection-based editing
+
+- 42 MCP tools: added atomic cel position/opacity, whole-image flips/exact
+  quarter-turns, explicit native unlinking, rectangle/ellipse selection masks,
+  all/none/invert, read-only selection PNGs, selected fill/erase, and overlap-safe
+  selected pixel moves/copies.
+- Cel transforms retain all image pixels, including off-canvas data, and preserve
+  top-left position/opacity; indexed/grayscale transforms retain raw pixel values.
+- Visible document-wide masks are undoable without changing saved state; bitmap
+  changes participate in revisions. Pixel operations never fall back to a whole
+  cel when selection is missing. Pixel+mask translation is one undo step, and
+  out-of-canvas destinations are refused rather than clipped.
+- Existing drawing tools accept explicit `respectSelection: true` while retaining
+  their backward-compatible default. Native flood traversal respects mask barriers.
+- Guards shared-image aliases and bounds off-canvas patch growth before native
+  allocation. Failed transactions restore mask/visibility/transformation state.
+- Adds pixel/mask/history/color-mode/limit regressions and extends the real MCP
+  animation demo with selection previews, copying/filling, transforms, and opacity.
+
 ## 0.4.0 — Palettes, animation tags, and GIF/APNG export
 
 - 34 MCP tools: added sparse palette editing/resizing, palette-keyframe removal,

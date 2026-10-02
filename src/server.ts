@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.4.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.5.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -25,7 +25,8 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const channel = z.number().int().min(0).max(255);
   const relativePath = z.string().min(1).max(4096);
   const target = { documentId, expectedRevision };
-  const paintTarget = { ...target, layerId: documentId, frame };
+  const celTarget = { ...target, layerId: documentId, frame };
+  const paintTarget = { ...celTarget, respectSelection: z.boolean().default(false) };
   const coordinate = z.number().int().min(0).max(1023);
   const point = z.object({ x: coordinate, y: coordinate });
   const color = z.object({ r: channel, g: channel, b: channel, a: channel });
@@ -105,7 +106,7 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },
   }, () => call("list_documents"));
   server.registerTool("libresprite_inspect", {
-    description: "Inspect document revision, layers/cels, zero-based frames and durations, palettes, tags, and undo state. Use its revision for subsequent edits. IDs are local to this editor session.",
+    description: "Inspect document revision, layers/cels, zero-based frames and durations, palettes, tags, document-wide selection bounds/count/visibility, and undo state. Selection bitmap changes also advance revision. Use its revision for subsequent edits. IDs are local to this editor session.",
     inputSchema: { documentId }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("inspect", params));
   server.registerTool("libresprite_render", {
@@ -169,6 +170,44 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { ...target, path: relativePath, format: z.enum(["gif", "apng"]), frames: z.array(frame).min(1).max(256).optional(), tagId: documentId.optional(), scale, loop: z.boolean().default(true), overwrite: z.boolean().default(false) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("export_animation", params));
+  server.registerTool("libresprite_update_cel", {
+    description: "Atomically set an existing cel's x/y position and/or opacity in one native undo step. Positions are signed native-file coordinates (-32768..32767); off-canvas pixels are retained, not clipped. Opacity0-255. Works in RGBA/indexed/grayscale; refuses locked ancestors/background layers/linked cels (unlink explicitly first). No implicit cel creation; no-op preserves history/UI selection. Changed requests select the target layer/frame. Requires active document/current revision/resumed bridge.",
+    inputSchema: { ...celTarget, x: z.number().int().min(-32768).max(32767).optional(), y: z.number().int().min(-32768).max(32767).optional(), opacity: channel.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("update_cel", params));
+  server.registerTool("libresprite_transform_cel", {
+    description: "Undoably flip or exactly rotate the WHOLE cel image, including off-canvas pixels. Flips use native raster primitives; rotations are lossless integer pixel permutations, no smoothing/remapping. Quarter-turns swap image width/height; cel top-left x/y and opacity stay fixed (not canvas-centered). Ignores selection masks. Supports RGBA/indexed/grayscale and <=1024x1024 cel images. Refuses locked/background/linked/shared-image targets; no implicit missing-cel creation. Symmetric no-ops preserve revision/history/UI selection. Changed requests select target layer/frame; active/revision/resumed guards apply.",
+    inputSchema: { ...celTarget, operation: z.enum(["flip_horizontal", "flip_vertical", "rotate_cw", "rotate_ccw", "rotate_180"]) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("transform_cel", params));
+  server.registerTool("libresprite_unlink_cel", {
+    description: "Explicitly make one native linked cel independent by cloning its image/data in one undo step. Preserves position/opacity/pixels/user data; other linked frames are unchanged. Undo restores the original link. Supports all color modes; refuses locked/background targets or missing cels. Already-unlinked is a no-op, not a new undo step. Changed requests select the target layer/frame; requires active/current revision/resumed bridge.",
+    inputSchema: celTarget, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("unlink_cel", params));
+  server.registerTool("libresprite_set_selection", {
+    description: "Undoable visible DOCUMENT-WIDE selection mask from inclusive rectangle/ellipse endpoints inside canvas (reversed endpoints allowed). mode replace(default)/add/subtract/intersect combines pixel masks; hidden/deselected mask counts as empty. Result is clipped to canvas and empty results clear selection. Does not change pixels, saved/modified state, active frame/layer, or global preferences; does advance revision/history. Identical visible mask is a no-op. Shared by all frames/layers; requires active document/current revision/resumed bridge. Render_selection shows actual mask/overlay.",
+    inputSchema: { ...target, shape: z.enum(["rectangle", "ellipse"]).default("rectangle"), mode: z.enum(["replace", "add", "subtract", "intersect"]).default("replace"), x1: coordinate, y1: coordinate, x2: coordinate, y2: coordinate },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("set_selection", params));
+  server.registerTool("libresprite_modify_selection", {
+    description: "Undoably select all canvas pixels, clear selection (none), or invert selected pixels within canvas. Inverting no visible selection selects all; no implicit pixel edits. Document-wide mask, independent of frame/layer, not serialized as persistent native-file selection. Preserves saved/modified state and GUI frame/layer; updates revision/history unless unchanged. Requires active document/current revision/resumed bridge.",
+    inputSchema: { ...target, action: z.enum(["all", "none", "invert"]) },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("modify_selection", params));
+  server.registerTool("libresprite_render_selection", {
+    description: "Read-only PNG of visible document-wide selection. mode overlay(default) highlights selected canvas pixels cyan at opacity(default96) over the native frame composite; mode mask returns opaque white selected pixels/transparent others. No selection means ordinary composite or empty mask. scale nearest-neighbor1-16, <=1,048,576 output pixels; returns selection/revision metadata. No UI/pixels/history/preferences changes; works paused and for inactive documents.",
+    inputSchema: { documentId, frame, scale, mode: z.enum(["overlay", "mask"]).default("overlay"), opacity: channel.default(96) },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("render_selection", params));
+  server.registerTool("libresprite_fill_selection", {
+    description: "Undoably replace pixels with RGBA color only inside the VISIBLE selection on explicit layer/frame. Alpha0 erases; no alpha blending/composite sampling. Missing cel can be created by changed pixels. Refuses absent/hidden selection (NO_SELECTION), not a whole-cel fallback; refuses indexed/grayscale, linked/shared-image/background/locked targets. Preserves mask, all unselected/off-canvas cel pixels, and other frames. Identical pixels are a no-op. Changed edits select target layer/frame; active/revision/resumed guards apply.",
+    inputSchema: { ...celTarget, color }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("fill_selection", params));
+  server.registerTool("libresprite_translate_selection", {
+    description: "Move or copy (copy:true) VISIBLE selected RGBA pixels within ONE explicit layer/frame by integer dx/dy, moving the document-wide mask with them. Snapshots raw cel pixels before edits, so overlaps are safe. Destination selected pixels REPLACE colors, including transparent source pixels; no blending. Refuses a mask/destination outside canvas instead of clipping, no hidden/no-selection fallback. One undo step restores pixels AND mask; blank-pixel mask-only moves preserve saved state. Refuses non-RGBA/background/locked/linked/shared-image targets. dx/dy0 is a no-op. Selects changed target layer/frame; active/revision/resumed guards apply.",
+    inputSchema: { ...celTarget, dx: z.number().int().min(-1023).max(1023), dy: z.number().int().min(-1023).max(1023), copy: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("translate_selection", params));
   server.registerTool("libresprite_create", {
     description: "Create and visibly select a new transparent RGBA sprite with one layer/frame. Requires resumed bridge. Existing documents are left open; creation itself is not an undo step.",
     inputSchema: { width: z.number().int().min(1).max(1024), height: z.number().int().min(1).max(1024), name: z.string().min(1).max(120).default("AI Sprite") }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -178,8 +217,8 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { path: relativePath }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, (params) => call("open", params));
   server.registerTool("libresprite_set_pixels", {
-    description: "Apply an atomic, undoable RGBA pixel batch to an explicit layer/frame in the ACTIVE document. Coordinates are canvas pixels, colors replace pixels (not alpha-blended), duplicates use the last color. Requires current revision and resumed bridge. Refuses locked/background layers and linked cels. Does not apply the selection mask. Render after editing to inspect the result.",
-    inputSchema: { ...target, layerId: documentId, frame, label: z.string().min(1).max(120).default("AI pixel edit"), pixels: z.array(z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(1023), r: channel, g: channel, b: channel, a: channel })).min(1).max(16384) }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    description: "Apply an atomic, undoable RGBA pixel batch to an explicit layer/frame in the ACTIVE document. Coordinates are canvas pixels, colors replace pixels (not alpha-blended), duplicates use the last color. Requires current revision and resumed bridge. Refuses locked/background layers and linked/shared-image cels. Selection is ignored by default; respectSelection:true requires a visible mask and skips unselected pixels (all input still validates). Render after editing to inspect the result.",
+    inputSchema: { ...paintTarget, label: z.string().min(1).max(120).default("AI pixel edit"), pixels: z.array(z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(1023), r: channel, g: channel, b: channel, a: channel })).min(1).max(16384) }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("set_pixels", params));
   server.registerTool("libresprite_create_layer", {
     description: "Create/select an undoable empty image layer or group in the active document. parentId null/omitted means root; otherwise an editable group. Omit afterLayerId to append on top, or use null for the bottom. Never inserts below a background. Returns createdLayerId. Requires resumed bridge/current revision.",
@@ -216,17 +255,17 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("set_frame_duration", params));
   server.registerTool("libresprite_draw_shape", {
-    description: "Draw a native pixel-aligned line, rectangle, or ellipse as ONE undoable edit on an explicit layer/frame. Endpoints are inclusive, inside the canvas; rectangle/ellipse corners may be reversed. Lines and outlines are one pixel wide. filled defaults false (invalid for a line). Replaces RGBA colors, ignores selection masks, refuses linked/background/locked cels/layers. Render afterwards; alpha 0 erases. No-op drawing leaves history unchanged.",
+    description: "Draw a native pixel-aligned line, rectangle, or ellipse as ONE undoable edit on an explicit layer/frame. Endpoints are inclusive, inside canvas; rectangle/ellipse corners may be reversed. Lines/outlines are one pixel wide; filled defaults false (invalid for line). Replaces RGBA colors (alpha0 erases). Ignores selection by default; respectSelection:true requires a visible mask and clips drawing to selected pixels. Refuses linked/shared-image/background/locked targets. No-op preserves history; render afterwards.",
     inputSchema: { ...paintTarget, shape: z.enum(["line", "rectangle", "ellipse"]), x1: coordinate, y1: coordinate, x2: coordinate, y2: coordinate, color, filled: z.boolean().default(false), label: z.string().min(1).max(120).default("AI shape") },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("draw_shape", params));
   server.registerTool("libresprite_draw_stroke", {
-    description: "Draw a connected one-pixel polyline with 1-1024 canvas points as one atomic native undo step. Native line rasterization, inclusive endpoints, RGBA replacement (alpha 0 erases). Ignores selection masks; refuses locked/background layers and linked cels. No pressure, brush width, or smoothing yet. Render afterwards.",
+    description: "Draw a connected one-pixel polyline with 1-1024 canvas points as one atomic native undo step. Native line rasterization, inclusive endpoints, RGBA replacement (alpha0 erases). Ignores selection by default; respectSelection:true requires a visible mask and clips the stroke. Refuses locked/background/linked/shared-image targets. No pressure, brush width, or smoothing yet. Render afterwards.",
     inputSchema: { ...paintTarget, points: z.array(point).min(1).max(1024), color, label: z.string().min(1).max(120).default("AI stroke") },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("draw_stroke", params));
   server.registerTool("libresprite_flood_fill", {
-    description: "Flood fill the TARGET CEL's full canvas, not the composited sprite. Native matching uses per-RGBA-channel tolerance (0-255) and treats fully transparent colors as equivalent. contiguous:true fills the connected region; false replaces all matching pixels in that layer/frame. Replaces colors, ignores selection masks, requires current revision/resumed bridge, refuses linked/background/locked layers. An empty cel's transparent canvas can be filled. One undo step unless no pixels change.",
+    description: "Flood fill the TARGET CEL's canvas, not the composite. Native matching uses per-RGBA-channel tolerance0-255 and equates fully transparent colors. contiguous:true fills connected region; false replaces all matches. Selection ignored by default; respectSelection:true requires a visible mask and restricts traversal/matches to selected pixels; an unselected seed is a no-op. RGBA replacement, current revision/resumed bridge; refuses linked/shared-image/background/locked targets. Empty cel's transparent canvas can be filled. One undo step unless unchanged.",
     inputSchema: { ...paintTarget, x: coordinate, y: coordinate, color, tolerance: channel.default(0), contiguous: z.boolean().default(true), label: z.string().min(1).max(120).default("AI flood fill") },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("flood_fill", params));

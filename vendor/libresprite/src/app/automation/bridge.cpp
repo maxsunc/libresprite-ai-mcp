@@ -14,6 +14,9 @@
 #include "app/cmd/remove_layer.h"
 #include "app/cmd/remove_frame_tag.h"
 #include "app/cmd/remove_palette.h"
+#include "app/cmd/replace_image.h"
+#include "app/cmd/set_cel_opacity.h"
+#include "app/cmd/set_cel_position.h"
 #include "app/cmd/set_frame_duration.h"
 #include "app/cmd/set_frame_tag_anidir.h"
 #include "app/cmd/set_frame_tag_color.h"
@@ -23,6 +26,8 @@
 #include "app/cmd/set_layer_name.h"
 #include "app/cmd/set_layer_opacity.h"
 #include "app/cmd/set_palette.h"
+#include "app/cmd/set_mask.h"
+#include "app/cmd/unlink_cel.h"
 #include "app/context_access.h"
 #include "app/document_api.h"
 #include "app/document_undo.h"
@@ -41,11 +46,14 @@
 #include "doc/cel.h"
 #include "doc/cels_range.h"
 #include "doc/algorithm/floodfill.h"
+#include "doc/algorithm/flip_image.h"
+#include "doc/blend_funcs.h"
 #include "doc/documents.h"
 #include "doc/frame_tag.h"
 #include "doc/image.h"
 #include "doc/layer.h"
 #include "doc/layers_range.h"
+#include "doc/mask.h"
 #include "doc/palette.h"
 #include "doc/primitives.h"
 #include "doc/sprite.h"
@@ -136,7 +144,9 @@ void workingLimits(Document* document) {
 // On rollback restore IDs, not potentially deleted/recreated layer pointers.
 class SelectionGuard {
 public:
-  explicit SelectionGuard(Document* document) : m_document(document) {
+  explicit SelectionGuard(Document* document)
+    : m_document(document), m_mask(new Mask(*document->mask())),
+      m_maskVisible(document->isMaskVisible()), m_transformation(document->getTransformation()) {
     auto editor = UIContext::instance()->activeEditor();
     m_layerId = editor->layer() ? editor->layer()->id() : 0;
     m_frame = editor->frame();
@@ -145,8 +155,14 @@ public:
     if (committed) return;
     try {
       auto editor = UIContext::instance()->activeEditor();
+      // Native SetMask undo intentionally forgets a hidden/deselected mask.
+      // A FAILED operation must preserve even that retained manual state.
+      m_document->setMask(m_mask.get());
+      m_document->setMaskVisible(m_maskVisible);
+      m_document->setTransformation(m_transformation);
       for (auto layer : m_document->sprite()->layers()) if (layer->id() == m_layerId) editor->setLayer(layer);
       editor->setFrame(std::min(m_frame, m_document->sprite()->lastFrame()));
+      m_document->generateMaskBoundaries();
       m_document->notifyGeneralUpdate();
     } catch (...) { /* Preserve the original operation error. */ }
   }
@@ -155,6 +171,9 @@ private:
   Document* m_document;
   ObjectId m_layerId;
   frame_t m_frame;
+  std::unique_ptr<Mask> m_mask;
+  bool m_maskVisible;
+  Transformation m_transformation;
 };
 void nonblocking(int fd) {
   if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
@@ -332,7 +351,20 @@ private:
       result["tags"].push_back({{"tagId", tag->id()}, {"name", tag->name()}, {"from", tag->fromFrame()}, {"to", tag->toFrame()}, {"direction", int(tag->aniDir())}, {"color", tag->color()}});
     result["canUndo"] = document->undoHistory()->canUndo();
     result["canRedo"] = document->undoHistory()->canRedo();
+    result["selection"] = selectionInfo(document);
     return result;
+  }
+  Json selectionInfo(Document* document) {
+    auto mask = document->mask();
+    auto bounds = mask->bounds();
+    size_t selected = 0;
+    if (auto bitmap = mask->bitmap()) {
+      require(size_t(bitmap->width()) * bitmap->height() <= MaxPixels, "LIMIT_EXCEEDED", "Selection exceeds 1,048,576 bitmap pixels.");
+      for (int y = 0; y < bitmap->height(); ++y)
+        for (int x = 0; x < bitmap->width(); ++x) selected += bitmap->getPixel(x, y) != 0;
+    }
+    return {{"visible", document->isMaskVisible()}, {"x", bounds.x}, {"y", bounds.y},
+            {"width", bounds.w}, {"height", bounds.h}, {"selectedPixels", selected}};
   }
   int revision(Document* document, const Json& metadata) {
     // Fingerprint native state AND image bytes: catches ordinary manual edits,
@@ -348,6 +380,12 @@ private:
       total += size;
       require(total <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Sprite image data exceeds the bridge's 32 MiB working limit.");
       SHA1Input(&hash, image->getPixelAddress(0, 0), unsigned(size));
+    }
+    // Selection is document state too: manual masks can have the same bounding
+    // box/pixel count while selecting different pixels. Hash actual bitmap bits.
+    if (auto bitmap = document->mask()->bitmap()) {
+      size_t size = size_t(bitmap->getRowStrideSize()) * bitmap->height();
+      SHA1Input(&hash, bitmap->getPixelAddress(0, 0), unsigned(size));
     }
     uint8_t digest[SHA1HashSize]; SHA1Result(&hash, digest);
     std::string fingerprint(reinterpret_cast<char*>(digest), sizeof(digest));
@@ -797,17 +835,153 @@ private:
     publishExport(path, bytes, overwrite);
     return result;
   }
-  Layer* paintLayer(Document* document, const Json& params) {
+  Layer* celLayer(Document* document, const Json& params, bool allowLinked = false) {
     auto sprite = document->sprite();
-    require(sprite->pixelFormat() == IMAGE_RGB, "UNSUPPORTED_COLOR_MODE", "Pixel edits currently require RGBA sprites.");
     auto target = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
-    require(target->isImage(), "UNSUPPORTED_LAYER", "An image layer is required for drawing.");
+    require(target->isImage(), "UNSUPPORTED_LAYER", "An image layer is required for cel operations.");
     editable(target);
-    require(!target->isBackground(), "UNSUPPORTED_LAYER", "Pixel edits currently require a transparent layer.");
+    require(!target->isBackground(), "UNSUPPORTED_LAYER", "Cel operations currently require a transparent layer.");
     auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
     auto cel = target->cel(frame);
-    require(!cel || cel->links() == 0, "LINKED_CEL", "Unlink the cel before editing; implicit edits across frames are refused.");
+    require(allowLinked || !cel || cel->links() == 0, "LINKED_CEL", "Unlink the cel before editing; implicit edits across frames are refused.");
     return target;
+  }
+  void independentImage(Sprite* sprite, const std::shared_ptr<Cel>& cel) {
+    if (!cel) return;
+    for (auto other : sprite->cels())
+      require(other == cel || other->image()->id() != cel->image()->id(), "SHARED_IMAGE", "Another cel shares this image. Make an independent copy before changing pixels.");
+  }
+  Layer* paintLayer(Document* document, const Json& params) {
+    require(document->sprite()->pixelFormat() == IMAGE_RGB, "UNSUPPORTED_COLOR_MODE", "Pixel edits currently require RGBA sprites.");
+    auto target = celLayer(document, params);
+    independentImage(document->sprite(), target->cel(integer(params, "frame", 0, document->sprite()->lastFrame())));
+    return target;
+  }
+  void editCel(Document* document, const Json& params, const std::string& method) {
+    auto sprite = document->sprite();
+    auto target = celLayer(document, params, method == "unlink_cel");
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    auto cel = target->cel(frame);
+    require(bool(cel), "CEL_NOT_FOUND", "No cel exists on this layer/frame.");
+    if (method == "unlink_cel") {
+      if (!cel->links()) return;
+      UIContext::instance()->activeEditor()->setLayer(target);
+      UIContext::instance()->activeEditor()->setFrame(frame);
+      Transaction transaction(UIContext::instance(), "AI unlink cel");
+      transaction.execute(new cmd::UnlinkCel(cel));
+      finish(transaction, document);
+      return;
+    }
+    if (method == "update_cel") {
+      require(params.contains("x") || params.contains("y") || params.contains("opacity"), "INVALID_PARAMS", "Provide cel x, y, and/or opacity.");
+      int x = params.contains("x") ? integer(params, "x", -32768, 32767) : cel->x();
+      int y = params.contains("y") ? integer(params, "y", -32768, 32767) : cel->y();
+      int opacity = params.contains("opacity") ? integer(params, "opacity", 0, 255) : cel->opacity();
+      if (x == cel->x() && y == cel->y() && opacity == cel->opacity()) return;
+      UIContext::instance()->activeEditor()->setLayer(target);
+      UIContext::instance()->activeEditor()->setFrame(frame);
+      Transaction transaction(UIContext::instance(), "AI cel properties");
+      if (x != cel->x() || y != cel->y()) transaction.execute(new cmd::SetCelPosition(cel, x, y));
+      if (opacity != cel->opacity()) transaction.execute(new cmd::SetCelOpacity(cel, opacity));
+      finish(transaction, document);
+      return;
+    }
+    independentImage(sprite, cel);
+    auto operation = text(params, "operation", 32);
+    require(operation == "flip_horizontal" || operation == "flip_vertical" || operation == "rotate_cw" || operation == "rotate_ccw" || operation == "rotate_180", "INVALID_PARAMS", "Choose a horizontal/vertical flip or a clockwise/counterclockwise/180-degree rotation.");
+    auto image = cel->image();
+    require(image->width() <= 1024 && image->height() <= 1024, "LIMIT_EXCEEDED", "Whole-cel transforms support image bounds of at most 1024x1024, including off-canvas pixels.");
+    bool quarter = operation == "rotate_cw" || operation == "rotate_ccw";
+    ImageRef transformed(Image::create(image->pixelFormat(), quarter ? image->height() : image->width(), quarter ? image->width() : image->height()));
+    transformed->setMaskColor(image->maskColor());
+    if (operation == "flip_horizontal" || operation == "flip_vertical") {
+      doc::copy_image(transformed.get(), image, 0, 0);
+      doc::algorithm::flip_image(transformed.get(), transformed->bounds(), operation == "flip_horizontal" ? doc::algorithm::FlipHorizontal : doc::algorithm::FlipVertical);
+    } else {
+      // Exact integer pixel permutation: no interpolation, centering, canvas
+      // clipping, palette remapping, selection mask, or metadata replacement.
+      for (int y = 0; y < image->height(); ++y)
+        for (int x = 0; x < image->width(); ++x) {
+          int dx = operation == "rotate_cw" ? image->height() - 1 - y : operation == "rotate_ccw" ? y : image->width() - 1 - x;
+          int dy = operation == "rotate_cw" ? x : operation == "rotate_ccw" ? image->width() - 1 - x : image->height() - 1 - y;
+          transformed->putPixel(dx, dy, image->getPixel(x, y));
+        }
+    }
+    if (transformed->size() == image->size() && doc::count_diff_between_images(image, transformed.get()) == 0) return;
+    UIContext::instance()->activeEditor()->setLayer(target);
+    UIContext::instance()->activeEditor()->setFrame(frame);
+    Transaction transaction(UIContext::instance(), "AI cel transform");
+    transaction.execute(new cmd::ReplaceImage(sprite, cel->imageRef(), transformed));
+    finish(transaction, document);
+  }
+  Mask* visibleSelection(Document* document) {
+    require(document->isMaskVisible() && selectionInfo(document)["selectedPixels"] != 0, "NO_SELECTION", "A visible nonempty selection is required. Refusing a whole-cel fallback.");
+    return document->mask();
+  }
+  Mask* paintSelection(Document* document, const Json& params) {
+    return params.contains("respectSelection") && boolean(params, "respectSelection") ? visibleSelection(document) : nullptr;
+  }
+  bool sameSelection(Document* document, const Mask& mask) {
+    if (!document->isMaskVisible()) return mask.isEmpty();
+    auto current = document->mask();
+    return !mask.isEmpty() && current->bounds() == mask.bounds() && doc::count_diff_between_images(current->bitmap(), mask.bitmap()) == 0;
+  }
+  void editSelection(Document* document, const Json& params, bool modifying) {
+    auto sprite = document->sprite();
+    Mask mask;
+    mask.replace(sprite->bounds()); mask.bitmap()->clear(0);
+    if (modifying) {
+      auto action = text(params, "action", 16);
+      require(action == "all" || action == "none" || action == "invert", "INVALID_PARAMS", "action must be all, none, or invert.");
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x)
+          mask.bitmap()->putPixel(x, y, action == "all" || (action == "invert" && !(document->isMaskVisible() && document->mask()->containsPoint(x, y))));
+    } else {
+      auto mode = params.contains("mode") ? text(params, "mode", 16) : "replace";
+      auto shape = params.contains("shape") ? text(params, "shape", 16) : "rectangle";
+      require(mode == "replace" || mode == "add" || mode == "subtract" || mode == "intersect", "INVALID_PARAMS", "mode must be replace, add, subtract, or intersect.");
+      require(shape == "rectangle" || shape == "ellipse", "INVALID_PARAMS", "shape must be rectangle or ellipse.");
+      int x1 = integer(params, "x1", 0, sprite->width() - 1), y1 = integer(params, "y1", 0, sprite->height() - 1);
+      int x2 = integer(params, "x2", 0, sprite->width() - 1), y2 = integer(params, "y2", 0, sprite->height() - 1);
+      if (x1 > x2) std::swap(x1, x2);
+      if (y1 > y2) std::swap(y1, y2);
+      if (shape == "rectangle") doc::fill_rect(mask.bitmap(), x1, y1, x2, y2, 1);
+      else doc::fill_ellipse(mask.bitmap(), x1, y1, x2, y2, 1);
+      if (mode != "replace") {
+        for (int y = 0; y < sprite->height(); ++y)
+          for (int x = 0; x < sprite->width(); ++x) {
+            bool old = document->isMaskVisible() && document->mask()->containsPoint(x, y), added = mask.containsPoint(x, y);
+            mask.bitmap()->putPixel(x, y, mode == "add" ? old || added : mode == "subtract" ? old && !added : old && added);
+          }
+      }
+    }
+    mask.shrink();
+    if (sameSelection(document, mask)) return;
+    Transaction transaction(UIContext::instance(), "AI selection", DoesntModifyDocument);
+    transaction.execute(new cmd::SetMask(document, &mask));
+    finish(transaction, document);
+    document->generateMaskBoundaries();
+  }
+  Json renderSelection(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Selection preview exceeds 1,048,576 output pixels.");
+    auto mode = params.contains("mode") ? text(params, "mode", 16) : "overlay";
+    require(mode == "overlay" || mode == "mask", "INVALID_PARAMS", "mode must be overlay or mask.");
+    int opacity = params.contains("opacity") ? integer(params, "opacity", 0, 255) : 96;
+    auto image = composite(sprite, frame);
+    for (int y = 0; y < sprite->height(); ++y)
+      for (int x = 0; x < sprite->width(); ++x) {
+        bool selected = document->isMaskVisible() && document->mask()->containsPoint(x, y);
+        if (mode == "mask") image->putPixel(x, y, selected ? rgba(255, 255, 255, 255) : 0);
+        else if (selected && opacity > 0) image->putPixel(x, y, rgba_blender_normal(image->getPixel(x, y), rgba(0, 220, 255, 255), opacity));
+      }
+    auto result = previewMetadata(document);
+    result["selection"] = selectionInfo(document); result["frame"] = frame; result["scale"] = scale; result["mode"] = mode; result["opacity"] = opacity;
+    result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
+    addPng(result, encodePng(image.get(), scale));
+    return result;
   }
   void finish(Transaction& transaction, Document* document) {
     // Check before commit, so a large structural edit rolls back rather than
@@ -819,26 +993,41 @@ private:
   }
   void applyPatch(Document* document, Layer* target, frame_t frame,
                   const ImageRef& patch, const gfx::Region& region,
-                  const gfx::Point& position, const std::string& label) {
-    if (region.isEmpty()) return;
+                  const gfx::Point& position, const std::string& label, Mask* selection = nullptr) {
+    bool maskChanged = selection && !sameSelection(document, *selection);
+    if (region.isEmpty() && !maskChanged) return;
     auto cel = target->cel(frame);
+    if (!region.isEmpty() && cel) {
+      // Large signed cel offsets can otherwise make CropCel allocate gigabytes
+      // BEFORE finish() can enforce the working limit. Bound the union up front.
+      auto bounds = cel->bounds() | gfx::Rect(region.bounds()).offset(position);
+      uint64_t grown = uint64_t(bounds.w) * uint64_t(bounds.h) * 4;
+      require(grown <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Patch would grow an off-canvas cel beyond the 32 MiB working limit.");
+      std::vector<Image*> images; document->sprite()->getImages(images);
+      uint64_t total = grown;
+      for (auto image : images) if (image != cel->image()) total += uint64_t(image->getRowStrideSize()) * image->height();
+      require(total <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Patch would exceed the sprite's 32 MiB image working limit.");
+    }
     // An absent cel has no image to preserve, but the patch's unpainted pixels
     // must be transparent (including holes in shapes).
     UIContext::instance()->activeEditor()->setLayer(target);
     UIContext::instance()->activeEditor()->setFrame(frame);
-    Transaction transaction(UIContext::instance(), label);
-    if (cel) transaction.execute(new cmd::PatchCel(cel, patch.get(), region, position));
-    else {
+    Transaction transaction(UIContext::instance(), label, region.isEmpty() ? DoesntModifyDocument : ModifyDocument);
+    if (!region.isEmpty() && cel) transaction.execute(new cmd::PatchCel(cel, patch.get(), region, position));
+    else if (!region.isEmpty()) {
       auto created = std::make_shared<Cel>(frame, patch);
       created->setPosition(position);
       transaction.execute(new cmd::AddCel(target, created));
     }
+    if (maskChanged) transaction.execute(new cmd::SetMask(document, selection));
     finish(transaction, document);
+    if (maskChanged) document->generateMaskBoundaries();
   }
   void setPixels(Document* document, const Json& params) {
     auto sprite = document->sprite();
     auto target = paintLayer(document, params);
     auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+    auto selection = paintSelection(document, params);
     require(params.contains("pixels") && params["pixels"].is_array() && !params["pixels"].empty() && params["pixels"].size() <= 16384,
             "INVALID_PARAMS", "Provide between 1 and 16,384 pixels.");
     struct Pixel { int x, y; color_t color; };
@@ -854,6 +1043,7 @@ private:
     patch->clear(0);
     gfx::Region region;
     for (const auto& pixel : pixels) {
+      if (selection && !selection->containsPoint(pixel.x, pixel.y)) continue;
       patch->putPixel(pixel.x - bounds.x, pixel.y - bounds.y, pixel.color);
       region |= gfx::Region(gfx::Rect(pixel.x - bounds.x, pixel.y - bounds.y, 1, 1));
     }
@@ -864,6 +1054,7 @@ private:
     auto sprite = document->sprite();
     auto target = paintLayer(document, params);
     auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+    auto selection = paintSelection(document, params);
     auto paint = color(params);
     auto label = params.contains("label") ? text(params, "label", 120) : "AI drawing";
     ImageRef mask(Image::create(IMAGE_BITMAP, sprite->width(), sprite->height()));
@@ -901,12 +1092,13 @@ private:
       int x = integer(params, "x", 0, sprite->width() - 1), y = integer(params, "y", 0, sprite->height() - 1);
       int tolerance = params.contains("tolerance") ? integer(params, "tolerance", 0, 255) : 0;
       bool contiguous = params.contains("contiguous") ? boolean(params, "contiguous") : true;
+      if (selection && !selection->containsPoint(x, y)) return;
       // Flood against a full canvas of this cel ONLY, not the visible composite.
       // Pixel sampling remains stable while the callback writes the mask.
       ImageRef source(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
       source->clear(0);
       if (auto cel = target->cel(frame)) doc::copy_image(source.get(), cel->image(), cel->x(), cel->y());
-      doc::algorithm::floodfill(source.get(), nullptr, x, y, sprite->bounds(), tolerance, contiguous, mask.get(),
+      doc::algorithm::floodfill(source.get(), selection, x, y, sprite->bounds(), tolerance, contiguous, mask.get(),
         [](int x1, int y, int x2, void* data) { doc::draw_hline(static_cast<Image*>(data), x1, y, x2, 1); });
     }
     ImageRef patch(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
@@ -919,7 +1111,7 @@ private:
       int start = -1;
       for (int x = 0; x <= sprite->width(); ++x) {
         bool changed = false;
-        if (x < sprite->width() && mask->getPixel(x, y)) {
+        if (x < sprite->width() && mask->getPixel(x, y) && (!selection || selection->containsPoint(x, y))) {
           auto old = cel ? doc::get_pixel(cel->image(), x - cel->x(), y - cel->y()) : 0;
           // get_pixel returns -1 outside an image: outside a cropped cel is transparent.
           if (!cel || !cel->bounds().contains(x, y)) old = 0;
@@ -931,6 +1123,47 @@ private:
       }
     }
     applyPatch(document, target, frame, patch, region, gfx::Point(0, 0), label);
+  }
+  void selectionPixels(Document* document, const Json& params, bool translating) {
+    auto sprite = document->sprite();
+    auto target = paintLayer(document, params);
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    auto mask = visibleSelection(document);
+    auto cel = target->cel(frame);
+    ImageRef patch(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+    patch->clear(0);
+    auto sample = [&](int x, int y) { return cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) : color_t(0); };
+    Mask moved;
+    if (translating) {
+      int dx = integer(params, "dx", -1023, 1023), dy = integer(params, "dy", -1023, 1023);
+      bool copy = params.contains("copy") ? boolean(params, "copy") : false;
+      require(sprite->bounds().contains(mask->bounds()), "SELECTION_OUTSIDE_CANVAS", "Selection must lie entirely inside the canvas for pixel translation.");
+      auto destination = mask->bounds(); destination.offset(dx, dy);
+      require(sprite->bounds().contains(destination), "OUTSIDE_CANVAS", "Translated selection would leave the canvas. Clipping is refused.");
+      if (dx == 0 && dy == 0) return;
+      // Snapshot BEFORE clearing or writing, so overlaps never read edited data.
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x) patch->putPixel(x, y, sample(x, y));
+      if (!copy) for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x) if (mask->containsPoint(x, y)) patch->putPixel(x, y, 0);
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x) if (mask->containsPoint(x, y)) patch->putPixel(x + dx, y + dy, sample(x, y));
+      moved.copyFrom(mask); moved.offsetOrigin(dx, dy);
+    } else {
+      auto paint = color(params);
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x) patch->putPixel(x, y, mask->containsPoint(x, y) ? paint : sample(x, y));
+    }
+    gfx::Region region;
+    for (int y = 0; y < sprite->height(); ++y) {
+      int start = -1;
+      for (int x = 0; x <= sprite->width(); ++x) {
+        bool changed = x < sprite->width() && patch->getPixel(x, y) != sample(x, y);
+        if (changed && start < 0) start = x;
+        if (!changed && start >= 0) { region |= gfx::Region(gfx::Rect(start, y, x - start, 1)); start = -1; }
+      }
+    }
+    applyPatch(document, target, frame, patch, region, gfx::Point(0, 0), translating ? "AI translate selected pixels" : "AI fill selected pixels", translating ? &moved : nullptr);
   }
   Json editLayers(Document* document, const Json& params, const std::string& method) {
     auto sprite = document->sprite();
@@ -1083,9 +1316,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.4.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.5.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -1104,7 +1337,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -1131,6 +1364,7 @@ private:
       if (method == "inspect") return inspect(document);
       if (method == "contact_sheet") return contactSheet(document, params);
       if (method == "render_onion_skin") return renderOnionSkin(document, params);
+      if (method == "render_selection") return renderSelection(document, params);
       return renderFrame(document, params);
     }
     require(ctx->activeDocument() == document, "INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.");
@@ -1157,6 +1391,12 @@ private:
       editPalette(document, params, method == "remove_palette");
     } else if (method == "create_tag" || method == "update_tag" || method == "remove_tag") {
       extra = editTags(document, params, method);
+    } else if (method == "update_cel" || method == "transform_cel" || method == "unlink_cel") {
+      editCel(document, params, method);
+    } else if (method == "set_selection" || method == "modify_selection") {
+      editSelection(document, params, method == "modify_selection");
+    } else if (method == "fill_selection" || method == "translate_selection") {
+      selectionPixels(document, params, method == "translate_selection");
     } else if (method == "undo" || method == "redo") {
       auto history = document->undoHistory();
       require(method == "undo" ? history->canUndo() : history->canRedo(), "NO_HISTORY", "No matching undo/redo state.");

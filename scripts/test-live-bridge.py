@@ -13,6 +13,7 @@ import uuid
 from bridge_workflow_cases import test_layers_frames_drawing
 from bridge_preview_cases import test_assets_previews_exports
 from bridge_metadata_cases import test_palettes_tags_animation
+from bridge_selection_cases import test_cels_and_selection
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -74,7 +75,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.4.0" and "export_animation" in status["methods"]
+                assert status["bridgeVersion"] == "0.5.0" and "translate_selection" in status["methods"]
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
                 malformed = json.loads(client.reader.readline())
@@ -174,6 +175,7 @@ def main():
                 test_layers_frames_drawing(client, assets, SMOKE)
                 test_assets_previews_exports(client, assets, SMOKE)
                 test_palettes_tags_animation(client, assets, SMOKE)
+                test_cels_and_selection(client, assets, SMOKE)
             finally:
                 if client:
                     client.close()

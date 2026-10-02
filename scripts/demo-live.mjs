@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-live-demo", version: "0.4.0" });
+const client = new Client({ name: "libresprite-live-demo", version: "0.5.0" });
 const animation = process.argv.includes("--animation");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,7 +34,7 @@ async function call(name, args = {}) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 34);
+  assert.equal((await client.listTools()).tools.length, 42);
   console.log((await call("libresprite_launch")).metadata);
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -102,6 +102,22 @@ try {
     assert.equal(document.frameCount, 4);
     assert.equal(document.layers.length, 4);
     assert.ok(document.layers.every((layer) => (layer.cels ?? []).every((cel) => cel.links === 0)));
+    await mutate("set_selection", { x1: 1, y1: 4, x2: 5, y2: 8 });
+    await mutate("translate_selection", { layerId: sparkle, frame: 0, dx: 22, dy: 16, copy: true });
+    const copied = await call("libresprite_render", { documentId, frame: 0, scale: 8 });
+    const copyMask = document.selection;
+    await mutate("undo", {});
+    await mutate("redo", {});
+    assert.deepEqual(document.selection, copyMask);
+    assert.equal((await call("libresprite_render", { documentId, frame: 0, scale: 8 })).content.find((item) => item.type === "image").data, copied.content.find((item) => item.type === "image").data);
+    const selectionPreview = await call("libresprite_render_selection", { documentId, frame: 0, scale: 8 });
+    await writeFile(path.join(assets, "mushroom-selection.png"), Buffer.from(selectionPreview.content.find((item) => item.type === "image").data, "base64"));
+    await mutate("set_selection", { x1: 25, y1: 22, x2: 25, y2: 22 });
+    await mutate("fill_selection", { layerId: sparkle, frame: 0, color: { r: 60, g: 157, b: 126, a: 255 } });
+    await mutate("modify_selection", { action: "none" });
+    await mutate("draw_stroke", { layerId: sparkle, frame: 2, points: [{ x: 26, y: 26 }], color: cream });
+    await mutate("transform_cel", { layerId: sparkle, frame: 2, operation: "rotate_cw" });
+    await mutate("update_cel", { layerId: sparkle, frame: 3, opacity: 192 });
     previewFrame = 3;
   }
   const beforeUndo = await call("libresprite_render", { documentId, frame: previewFrame, scale: 8 });
@@ -179,7 +195,7 @@ try {
   await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...document, png, assetRoot: assets }, null, 2) + "\n");
   await call("libresprite_set_paused", { paused: true });
   console.log(animation
-    ? "PASS: real MCP -> grouped animation, palettes/tags/undo, exact save/reopen, asset previews, atomic PNG/sheet/GIF/APNG exports."
+    ? "PASS: real MCP -> grouped animation, cel transforms/selection copy+fill+undo, palettes/tags, exact save/reopen, previews and PNG/sheet/GIF/APNG exports."
     : "PASS: real MCP stdio -> native GUI -> pixel batches -> PNG -> undo/redo -> .ase save.");
   console.log(`Preview: ${png}`);
   if (animation) console.log(`Sprite sheet: ${path.join(assets, "mushroom-sheet.png")}`);
