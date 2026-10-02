@@ -1,5 +1,21 @@
 # Development milestones
 
+## 0.3.0 — Asset browsing, animation previews, and PNG export
+
+- 28 MCP tools: added root-restricted directory browsing, detached asset
+  thumbnails, contact sheets, native onion-skin previews, PNG frame export,
+  and PNG sprite-sheet export.
+- Read-only previews work while paused, leave GUI documents/selection/preferences
+  unchanged, and support inactive documents. Asset thumbnails do not open tabs
+  or return misleading temporary document IDs/revisions.
+- Sheets have ordered/subset frames, transparent padding, nearest-neighbor
+  scaling, and a returned `libresprite-sheet-v1` layout/timing manifest.
+- Export one PNG per request with atomic publication, no-overwrite by default,
+  explicit active-document/session/revision/pause checks, and no saved-state or
+  history changes. Sheet metadata is returned, not published as a second file.
+- Adds native GUI pixel/metadata/path/limit regressions and extends the real MCP
+  animation demo with browsing, thumbnails, contact/onion previews, and exports.
+
 ## 0.2.0 — Layers, frames, and drawing
 
 - 22 MCP tools: added image layers/groups, atomic properties, sibling restacking,

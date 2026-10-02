@@ -46,6 +46,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -367,24 +369,224 @@ private:
     if (saving) require(!fs::is_symlink(fs::symlink_status(candidate)), "INVALID_PATH", "Refusing to save through a symlink.");
     return resolved;
   }
+  bool supportedAsset(const fs::path& path) {
+    return path.extension() == ".png" || path.extension() == ".ase" || path.extension() == ".aseprite";
+  }
+  std::unique_ptr<Document> loadAsset(const fs::path& path) {
+    require(fs::is_regular_file(path) && fs::file_size(path) <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Open requires a regular file of at most 32 MiB.");
+    require(supportedAsset(path), "UNSUPPORTED_FORMAT", "Opening currently supports native sprites and PNG.");
+    std::unique_ptr<FileOp> operation(FileOp::createLoadDocumentOperation(nullptr, path.c_str(), FILE_LOAD_SEQUENCE_NONE));
+    require(operation && !operation->hasError(), "OPEN_FAILED", operation ? operation->error() : "Cannot create native load operation.");
+    operation->operate(); operation->done();
+    require(!operation->hasError() && operation->document(), "OPEN_FAILED", operation->hasError() ? operation->error() : "File did not produce a document.");
+    // Validate before postLoad's optional palette generation. Codecs themselves
+    // still aren't a sandbox: compressed input may allocate before these checks.
+    details(operation->document()); workingLimits(operation->document());
+    operation->postLoad();
+    require(!operation->hasError() && operation->document(), "OPEN_FAILED", operation->hasError() ? operation->error() : "File did not produce a document.");
+    return std::unique_ptr<Document>(operation->releaseDocument());
+  }
+  Json listAssets(const Json& params) {
+    auto directory = filePath({{"path", params.contains("path") ? text(params, "path") : "."}}, false);
+    require(fs::is_directory(directory), "INVALID_PATH", "Asset listing requires a directory inside the root.");
+    int offset = params.contains("offset") ? integer(params, "offset", 0, 4096) : 0;
+    int limit = params.contains("limit") ? integer(params, "limit", 1, 100) : 50;
+    std::vector<Json> entries;
+    int scanned = 0;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+      require(++scanned <= 4096, "LIMIT_EXCEEDED", "Directory has more than 4096 entries. Browse a smaller subdirectory.");
+      auto status = entry.symlink_status();
+      // Browsing never follows links (including in-root links) or special files.
+      if (fs::is_symlink(status)) continue;
+      bool folder = fs::is_directory(status);
+      if (!folder && !(fs::is_regular_file(status) && supportedAsset(entry.path()))) continue;
+      Json item = {{"path", entry.path().lexically_relative(m_root).generic_string()}, {"name", entry.path().filename().string()}, {"type", folder ? "directory" : "asset"}};
+      if (!folder) { item["bytes"] = entry.file_size(); item["format"] = entry.path().extension().string().substr(1); }
+      entries.push_back(item);
+    }
+    std::sort(entries.begin(), entries.end(), [](const Json& a, const Json& b) {
+      if (a["type"] != b["type"]) return a["type"] == "directory";
+      return a["name"].get<std::string>() < b["name"].get<std::string>();
+    });
+    require(size_t(offset) <= entries.size(), "INVALID_PARAMS", "offset exceeds this directory's current entry count. List again from zero.");
+    Json page = Json::array();
+    size_t end = std::min(entries.size(), size_t(offset + limit));
+    for (size_t i = size_t(offset); i < end; ++i) page.push_back(entries[i]);
+    return {{"path", directory.lexically_relative(m_root).generic_string()}, {"entries", page}, {"total", entries.size()}, {"nextOffset", end < entries.size() ? Json(end) : Json(nullptr)}, {"sessionId", m_session}};
+  }
+  ImageRef composite(Sprite* sprite, frame_t frame, const render::OnionskinOptions* onions = nullptr) {
+    ImageRef image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+    image->clear(0);
+    render::Render renderer;
+    renderer.setBgType(render::BgType::TRANSPARENT);
+    if (onions) renderer.setOnionskin(*onions);
+    renderer.renderSprite(image.get(), sprite, frame);
+    return image;
+  }
+  std::vector<uint8_t> encodePng(const Image* image, int scale = 1) {
+    require(size_t(image->width()) * size_t(image->height()) * scale * scale <= MaxPixels,
+            "LIMIT_EXCEEDED", "Image exceeds 1,048,576 output pixels. Reduce frames, columns, padding, or scale.");
+    std::shared_ptr<she::Surface> surface(she::instance()->createRgbaSurface(image->width() * scale, image->height() * scale), [](she::Surface* surface) { surface->dispose(); });
+    require(bool(surface), "RENDER_FAILED", "Cannot allocate preview surface.");
+    for (int y = 0; y < surface->height(); ++y)
+      for (int x = 0; x < surface->width(); ++x) surface->putPixel(image->getPixel(x / scale, y / scale), x, y);
+    auto bytes = she::instance()->encodeSurfaceAsPNG(surface.get());
+    require(!bytes.empty(), "RENDER_FAILED", "Cannot encode PNG image.");
+    return bytes;
+  }
+  void addPng(Json& result, const std::vector<uint8_t>& bytes) {
+    std::string encoded;
+    base::encode_base64(bytes, encoded);
+    result["pngBase64"] = encoded;
+  }
+  Json previewMetadata(Document* document) {
+    auto result = summary(document);
+    result["revision"] = revision(document, details(document));
+    result["sessionId"] = m_session;
+    return result;
+  }
+  Json previewAsset(const Json& params) {
+    auto path = filePath(params, false);
+    auto document = loadAsset(path);
+    auto sprite = document->sprite();
+    int frame = params.contains("frame") ? integer(params, "frame", 0, sprite->totalFrames() - 1) : 0;
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Preview exceeds 1,048,576 output pixels. Use a smaller scale.");
+    auto result = summary(document.get());
+    result.erase("documentId"); result.erase("name"); result.erase("modified");
+    result["path"] = path.lexically_relative(m_root).generic_string();
+    result["frame"] = frame; result["scale"] = scale;
+    result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
+    result["durationMs"] = sprite->frameDuration(frame); result["sessionId"] = m_session;
+    // No setContext(), inspect(), selection changes, or persistent document IDs.
+    addPng(result, encodePng(composite(sprite, frame).get(), scale));
+    return result;
+  }
   Json renderFrame(Document* document, const Json& params) {
     auto sprite = document->sprite();
     auto frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
     auto scale = integer(params, "scale", 1, 16);
     require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Preview exceeds 1,048,576 output pixels. Use a smaller scale.");
-    std::unique_ptr<Image> image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
-    image->clear(0);
-    render::Render renderer;
-    renderer.setBgType(render::BgType::TRANSPARENT);
-    renderer.renderSprite(image.get(), sprite, frame);
-    std::shared_ptr<she::Surface> surface(she::instance()->createRgbaSurface(sprite->width() * scale, sprite->height() * scale), [](she::Surface* surface) { surface->dispose(); });
-    require(bool(surface), "RENDER_FAILED", "Cannot allocate preview surface.");
-    for (int y = 0; y < surface->height(); ++y)
-      for (int x = 0; x < surface->width(); ++x) surface->putPixel(image->getPixel(x / scale, y / scale), x, y);
-    std::string encoded;
-    base::encode_base64(she::instance()->encodeSurfaceAsPNG(surface.get()), encoded);
     auto result = inspect(document);
-    result["pngBase64"] = encoded; result["frame"] = frame; result["scale"] = scale;
+    addPng(result, encodePng(composite(sprite, frame).get(), scale));
+    result["frame"] = frame; result["scale"] = scale;
+    return result;
+  }
+  Json renderOnionSkin(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    int frame = integer(params, "frame", 0, sprite->totalFrames() - 1);
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Preview exceeds 1,048,576 output pixels. Use a smaller scale.");
+    auto mode = params.contains("mode") ? text(params, "mode", 16) : "tint";
+    auto position = params.contains("position") ? text(params, "position", 16) : "behind";
+    require(mode == "tint" || mode == "merge", "INVALID_PARAMS", "mode must be tint or merge.");
+    require(position == "behind" || position == "front", "INVALID_PARAMS", "position must be behind or front.");
+    render::OnionskinOptions onions(mode == "tint" ? render::OnionskinType::RED_BLUE_TINT : render::OnionskinType::MERGE);
+    onions.position(position == "behind" ? render::OnionskinPosition::BEHIND : render::OnionskinPosition::INFRONT);
+    onions.prevFrames(params.contains("previous") ? integer(params, "previous", 0, 8) : 1);
+    onions.nextFrames(params.contains("next") ? integer(params, "next", 0, 8) : 1);
+    onions.opacityBase(params.contains("opacity") ? integer(params, "opacity", 0, 255) : 128);
+    onions.opacityStep(params.contains("opacityStep") ? integer(params, "opacityStep", 0, 255) : 32);
+    if (params.contains("layerId")) onions.layer(findLayer(sprite, integer(params, "layerId", 1, INT32_MAX)));
+    auto result = previewMetadata(document);
+    result["frame"] = frame; result["scale"] = scale; result["mode"] = mode; result["position"] = position;
+    result["previous"] = onions.prevFrames(); result["next"] = onions.nextFrames();
+    result["opacity"] = onions.opacityBase(); result["opacityStep"] = onions.opacityStep();
+    result["layerId"] = onions.layer() ? Json(onions.layer()->id()) : Json(nullptr);
+    result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
+    addPng(result, encodePng(composite(sprite, frame, &onions).get(), scale));
+    return result;
+  }
+  struct Sheet { ImageRef image; Json manifest; };
+  Sheet spriteSheet(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    std::vector<int> frames;
+    if (params.contains("frames")) {
+      require(params["frames"].is_array() && !params["frames"].empty() && params["frames"].size() <= 256, "INVALID_PARAMS", "Provide 1 to 256 unique frame indices, or omit frames for all.");
+      for (const auto& value : params["frames"]) {
+        int frame = integer({{"frame", value}}, "frame", 0, sprite->totalFrames() - 1);
+        require(std::find(frames.begin(), frames.end(), frame) == frames.end(), "INVALID_PARAMS", "Repeated frame indices are not supported.");
+        frames.push_back(frame);
+      }
+    } else for (int frame = 0; frame < sprite->totalFrames(); ++frame) frames.push_back(frame);
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    int columns = params.contains("columns") ? integer(params, "columns", 1, 16) : std::min(16, int(std::ceil(std::sqrt(frames.size()))));
+    require(size_t(columns) <= frames.size(), "INVALID_PARAMS", "columns cannot exceed the number of selected frames.");
+    int padding = params.contains("padding") ? integer(params, "padding", 0, 16) : 0;
+    int rows = (int(frames.size()) + columns - 1) / columns;
+    int cellWidth = sprite->width() * scale, cellHeight = sprite->height() * scale;
+    int width = columns * cellWidth + (columns + 1) * padding;
+    int height = rows * cellHeight + (rows + 1) * padding;
+    require(uint64_t(width) * uint64_t(height) <= MaxPixels, "LIMIT_EXCEEDED", "Sheet exceeds 1,048,576 output pixels. Reduce frames, padding, or scale.");
+    Sheet result{ImageRef(Image::create(IMAGE_RGB, width, height)), {{"schema", "libresprite-sheet-v1"}, {"width", width}, {"height", height}, {"columns", columns}, {"rows", rows}, {"padding", padding}, {"scale", scale}, {"sourceWidth", sprite->width()}, {"sourceHeight", sprite->height()}, {"frames", Json::array()}, {"tags", Json::array()}}};
+    result.image->clear(0);
+    for (size_t i = 0; i < frames.size(); ++i) {
+      int x = padding + int(i % columns) * (cellWidth + padding), y = padding + int(i / columns) * (cellHeight + padding);
+      auto image = composite(sprite, frames[i]);
+      for (int dy = 0; dy < cellHeight; ++dy)
+        for (int dx = 0; dx < cellWidth; ++dx) result.image->putPixel(x + dx, y + dy, image->getPixel(dx / scale, dy / scale));
+      result.manifest["frames"].push_back({{"frame", frames[i]}, {"x", x}, {"y", y}, {"width", cellWidth}, {"height", cellHeight}, {"durationMs", sprite->frameDuration(frames[i])}});
+    }
+    // Tag ranges refer to SOURCE frame indices, even for reordered/subset sheets.
+    for (auto tag : sprite->frameTags())
+      result.manifest["tags"].push_back({{"name", tag->name()}, {"from", tag->fromFrame()}, {"to", tag->toFrame()}, {"direction", int(tag->aniDir())}});
+    return result;
+  }
+  Json contactSheet(Document* document, const Json& params) {
+    auto result = previewMetadata(document);
+    auto sheet = spriteSheet(document, params);
+    result["sheet"] = sheet.manifest;
+    addPng(result, encodePng(sheet.image.get()));
+    return result;
+  }
+  void publishPng(const fs::path& path, const std::vector<uint8_t>& bytes, bool overwrite) {
+    auto status = fs::symlink_status(path);
+    require(!fs::is_symlink(status) && !fs::is_directory(status), "INVALID_PATH", "Refusing to export over a symlink or directory.");
+    require(overwrite || !fs::exists(status), "FILE_EXISTS", "Destination exists; explicitly allow overwrite or choose another filename.");
+    std::string pattern = (path.parent_path() / ".libresprite-export-XXXXXX").string();
+    std::vector<char> temporary(pattern.begin(), pattern.end()); temporary.push_back('\0');
+    int fd = mkstemp(temporary.data());
+    require(fd >= 0, "IO_ERROR", "Cannot create temporary export file.");
+    try {
+      size_t written = 0;
+      while (written < bytes.size()) {
+        auto count = write(fd, bytes.data() + written, bytes.size() - written);
+        if (count < 0 && errno == EINTR) continue;
+        require(count > 0, "IO_ERROR", "Cannot write PNG export.");
+        written += size_t(count);
+      }
+      int closeResult = close(fd); fd = -1;
+      require(closeResult == 0, "IO_ERROR", "Cannot finish PNG export.");
+      if (overwrite) fs::rename(temporary.data(), path);
+      else {
+        auto published = link(temporary.data(), path.c_str());
+        require(published == 0, errno == EEXIST ? "FILE_EXISTS" : "IO_ERROR", "Could not publish PNG; destination may have appeared during export.");
+        unlink(temporary.data());
+      }
+    } catch (...) { if (fd >= 0) close(fd); unlink(temporary.data()); throw; }
+  }
+  Json exportPng(Document* document, const Json& params, bool sheet) {
+    auto path = filePath(params, true);
+    require(path.extension() == ".png", "INVALID_PATH", "PNG export requires a .png path.");
+    bool overwrite = params.contains("overwrite") ? boolean(params, "overwrite") : false;
+    auto result = previewMetadata(document);
+    std::vector<uint8_t> bytes;
+    if (sheet) {
+      auto rendered = spriteSheet(document, params);
+      result["sheet"] = rendered.manifest;
+      bytes = encodePng(rendered.image.get());
+    } else {
+      int frame = integer(params, "frame", 0, document->sprite()->totalFrames() - 1);
+      int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+      require(size_t(document->sprite()->width()) * document->sprite()->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Export exceeds 1,048,576 output pixels. Use a smaller scale.");
+      result["frame"] = frame; result["scale"] = scale;
+      result["outputWidth"] = document->sprite()->width() * scale; result["outputHeight"] = document->sprite()->height() * scale;
+      bytes = encodePng(composite(document->sprite(), frame).get(), scale);
+    }
+    result["path"] = path.lexically_relative(m_root).generic_string(); result["bytes"] = bytes.size();
+    // Prepare/check the entire result before any file-system side effect.
+    require(result.dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Export metadata exceeds the bridge limit.");
+    publishPng(path, bytes, overwrite);
     return result;
   }
   Layer* paintLayer(Document* document, const Json& params) {
@@ -673,9 +875,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.2.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.3.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -683,6 +885,8 @@ private:
       return {{"paused", m_paused}, {"sessionId", m_session}};
     }
     uiIdle();
+    if (method == "list_assets") return listAssets(params);
+    if (method == "preview_asset") return previewAsset(params);
     if (method == "list_documents") {
       Json documents = Json::array();
       for (auto item : ctx->documents()) {
@@ -692,7 +896,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -707,13 +911,7 @@ private:
     if (method == "open") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
       auto path = filePath(params, false);
-      require(fs::is_regular_file(path) && fs::file_size(path) <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Open requires a regular file of at most 32 MiB.");
-      require(path.extension() == ".ase" || path.extension() == ".aseprite" || path.extension() == ".png", "UNSUPPORTED_FORMAT", "Opening currently supports native sprites and PNG.");
-      std::unique_ptr<FileOp> operation(FileOp::createLoadDocumentOperation(nullptr, path.c_str(), FILE_LOAD_SEQUENCE_NONE));
-      operation->operate(); operation->done(); operation->postLoad();
-      require(!operation->hasError(), "OPEN_FAILED", operation->error());
-      std::unique_ptr<Document> document(operation->releaseDocument());
-      require(bool(document), "OPEN_FAILED", "File did not produce a document.");
+      auto document = loadAsset(path);
       // Validate working limits before attaching a document to the GUI.
       inspect(document.get());
       document->setContext(ctx); auto result = inspect(document.get()); document.release();
@@ -722,9 +920,17 @@ private:
     auto document = findDocument(params);
     if (read) {
       DocumentReader reader(document, 0);
-      return method == "inspect" ? inspect(document) : renderFrame(document, params);
+      if (method == "inspect") return inspect(document);
+      if (method == "contact_sheet") return contactSheet(document, params);
+      if (method == "render_onion_skin") return renderOnionSkin(document, params);
+      return renderFrame(document, params);
     }
     require(ctx->activeDocument() == document, "INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.");
+    if (method == "export_png" || method == "export_sprite_sheet") {
+      DocumentReader reader(document, 0);
+      checkRevision(document, params);
+      return exportPng(document, params, method == "export_sprite_sheet");
+    }
     // Check and mutate under the same lock, on the same UI tick.
     ContextWriter writer(ctx, 0);
     checkRevision(document, params);

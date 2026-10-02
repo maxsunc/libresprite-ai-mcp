@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.2.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.3.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -29,6 +29,8 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const coordinate = z.number().int().min(0).max(1023);
   const point = z.object({ x: coordinate, y: coordinate });
   const color = z.object({ r: channel, g: channel, b: channel, a: channel });
+  const scale = z.number().int().min(1).max(16).default(1);
+  const sheet = { frames: z.array(frame).min(1).max(256).optional(), columns: z.number().int().min(1).max(16).optional(), scale, padding: z.number().int().min(0).max(16).default(0) };
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -108,6 +110,35 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     description: "Return an actual composited PNG image plus metadata for a zero-based frame. Nearest-neighbor scale preserves pixel edges. At most 1,048,576 output pixels. Includes revision; no file is written.",
     inputSchema: { documentId, frame, scale: z.number().int().min(1).max(16).default(1) }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("render", params));
+  server.registerTool("libresprite_list_assets", {
+    description: "Browse one directory inside the connected editor's asset root without opening documents. Returns directories and PNG/.ase/.aseprite files, directories first then bytewise name order, with root-relative paths and file sizes. Nonrecursive; symlinks/special files/other formats are skipped. Offset pagination (1-100 per page); directories above 4096 total entries are refused. Available while paused; directory changes may shift offsets.",
+    inputSchema: { path: relativePath.default("."), offset: z.number().int().min(0).max(4096).default(0), limit: z.number().int().min(1).max(100).default(50) },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("list_assets", params));
+  server.registerTool("libresprite_preview_asset", {
+    description: "Decode/render a trusted root-relative PNG/.ase/.aseprite to a PNG image without opening an editor tab or changing selection/preferences. Detached asset metadata has no documentId/revision: call libresprite_open to edit. Frame defaults 0; nearest-neighbor scale; 1,048,576 output pixels. Available while paused. Uses upstream codecs, not a hostile-input sandbox; no persistent thumbnail cache.",
+    inputSchema: { path: relativePath, frame: frame.default(0), scale },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("preview_asset", params));
+  server.registerTool("libresprite_contact_sheet", {
+    description: "Read-only PNG contact sheet of composited animation frames; does not write files or change GUI selection. Omit frames for all; explicit unique zero-based indices preserve supplied order. columns defaults ceil(sqrt(frame count)), max16 and no more than selected frames. scale is nearest-neighbor; padding (0-16) is OUTPUT pixels between cells and on all outer edges. Transparent padding/unused slots. Returns sheet frame rectangles/timings and SOURCE-index tag ranges; max 1,048,576 sheet pixels. Available while paused, including inactive documents.",
+    inputSchema: { documentId, ...sheet }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("contact_sheet", params));
+  server.registerTool("libresprite_render_onion_skin", {
+    description: "Read-only native onion-skin PNG; no document/selection/onion-preference changes. Current frame is the full visible composite. Optional layerId limits GHOSTS only to an image layer or group. previous/next (0-8) clip at sprite ends, never wrap tags. tint colors previous red/next blue; merge uses original colors. position behind/front follows native rendering (opaque layers may hide behind ghosts; front can tint background layers). Opacity decreases by opacityStep per distance beyond the nearest frame, clamped 0-255. Available while paused; max1,048,576 output pixels.",
+    inputSchema: { documentId, frame, scale, previous: z.number().int().min(0).max(8).default(1), next: z.number().int().min(0).max(8).default(1), mode: z.enum(["tint", "merge"]).default("tint"), position: z.enum(["behind", "front"]).default("behind"), opacity: channel.default(128), opacityStep: channel.default(32), layerId: documentId.optional() },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("render_onion_skin", params));
+  server.registerTool("libresprite_export_png", {
+    description: "Atomically publish one composited frame as a root-relative .png with nearest-neighbor scale. Requires ACTIVE document/current revision/resumed bridge. Overwrite must be explicitly true; refuses symlinks/directories/escapes. Does not mark the native document saved, change its filename, or add undo history (exported files are not undone). At most1,048,576 output pixels. Returns export path/size/revision, not image content. No automatic retries after uncertain outcomes.",
+    inputSchema: { ...target, path: relativePath, frame, scale, overwrite: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("export_png", params));
+  server.registerTool("libresprite_export_sprite_sheet", {
+    description: "Atomically export one PNG sprite sheet inside the asset root; same layout/limits as contact_sheet. Returns a libresprite-sheet-v1 manifest (frame rectangles/timing, source-index tags) IN the tool result; no separate JSON file is written, no trimming/packing/extrusion. Requires active document, current revision, resumed bridge. Overwrite opt-in; no document/history/saved-state changes. File publication is not undoable; inspect after uncertain outcomes instead of blindly retrying.",
+    inputSchema: { ...target, path: relativePath, ...sheet, overwrite: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("export_sprite_sheet", params));
   server.registerTool("libresprite_create", {
     description: "Create and visibly select a new transparent RGBA sprite with one layer/frame. Requires resumed bridge. Existing documents are left open; creation itself is not an undo step.",
     inputSchema: { width: z.number().int().min(1).max(1024), height: z.number().int().min(1).max(1024), name: z.string().min(1).max(120).default("AI Sprite") }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },

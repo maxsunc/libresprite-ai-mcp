@@ -99,6 +99,12 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_list_documents` | List IDs and identify the active document |
 | `libresprite_inspect` | Layers/cels, frames/durations, palettes, tags, revision |
 | `libresprite_render` | Composite a frame to PNG image content |
+| `libresprite_list_assets` | Browse supported assets/directories inside the root |
+| `libresprite_preview_asset` | Render a file thumbnail without opening a GUI tab |
+| `libresprite_contact_sheet` | Read-only tiled animation preview with frame rectangles |
+| `libresprite_render_onion_skin` | Read-only native ghost-frame preview |
+| `libresprite_export_png` | Atomic composited frame PNG export |
+| `libresprite_export_sprite_sheet` | Atomic PNG sheet export with returned layout/timing metadata |
 | `libresprite_create` | New single-frame transparent RGBA sprite |
 | `libresprite_open` | Open PNG or a native sprite inside the root |
 | `libresprite_set_pixels` | Atomic replacement-color pixel batch |
@@ -115,7 +121,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **22 tools** in server/bridge version **0.2.0**. Rebuild the editor
+There are **28 tools** in server/bridge version **0.3.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -209,6 +215,111 @@ Render afterwards to inspect the result.
   changes: upstream does not yet shift those palettes safely. They are not
   silently flattened or discarded. Duration-only edits remain available.
 
+## Asset browsing, animation previews, and export
+
+### Browse without opening tabs
+
+`libresprite_list_assets` lists **one directory** inside the configured asset
+root. `path` defaults to `"."`; `offset` defaults to 0 and `limit` to 50 (1–100).
+Directories appear first, then `.png`, `.ase`, and `.aseprite` files, each group
+sorted by bytewise name order. Paths in results are root-relative. File entries
+include their byte size and format; all symlinks, special files, and other
+extensions are skipped. Extension matching is currently case-sensitive.
+
+Follow `nextOffset` until it is null; `total` counts supported entries, not all
+files. Pagination is not a filesystem snapshot: if files change between calls,
+restart at offset 0. A directory with more than **4,096 total entries** is
+refused before returning a partial listing. Browse a smaller subdirectory rather
+than expecting recursive traversal.
+
+`libresprite_preview_asset` takes a trusted root-relative file `path`, optional
+`frame` (default 0), and `scale` (1–16, default 1). It decodes the file with native
+codecs, renders a PNG, and disposes the detached document **without opening a
+tab**. It returns dimensions, frame count, frame duration, and resolved path,
+but **no document ID or revision**. Use `libresprite_open` when you want to edit
+that asset. There is no persistent thumbnail cache. Like native open, explicit
+in-root symlink aliases can resolve to an in-root asset; escapes are refused.
+
+Both tools work while paused, but still respect the GUI `BUSY` boundary.
+Thumbnail decoding loads native data rather than providing a hostile-input
+sandbox or a reduced-memory decoder. Only preview trusted files.
+
+### Contact sheets
+
+`libresprite_contact_sheet` returns PNG image content plus a `sheet` manifest,
+without writing files. Required: `documentId`. Optional layout settings:
+
+| Setting | Behavior |
+| --- | --- |
+| `frames` | Omit for all; otherwise 1–256 unique source indices in your chosen order |
+| `columns` | Default `ceil(sqrt(frame count))`; 1–16, no more than the selected count |
+| `scale` | Nearest-neighbor enlargement, 1–16 (default 1) |
+| `padding` | 0–16 **output pixels** between cells and on every outer edge (default 0) |
+
+Each tile is the full visible native frame composite. No trimming, packing,
+extrusion, labels, checkerboard, or layer-visibility changes are applied. Padding
+and unused final-row cells are transparent. Output is bounded to **1,048,576
+pixels**, including all padding and unused cells. Reduce frames/scale/padding if
+the limit is exceeded. This read-only preview works for inactive documents too.
+
+For a 32×32 four-frame sprite, this produces a 517×130 preview:
+
+```json
+{ "documentId": 3, "frames": [0, 1, 2, 3], "columns": 4, "scale": 4, "padding": 1 }
+```
+
+The returned `sheet.schema` is **`libresprite-sheet-v1`**, a project-specific
+format, not an Aseprite-compatible export manifest. It reports output dimensions,
+source dimensions, columns/rows, scale/padding, and an ordered `frames` array.
+Each entry has `frame` (source index), `x`, `y`, `width`, `height` (output-pixel
+rectangle), and `durationMs`. Tag `from`/`to` ranges always refer to **source
+frame indices**, not tile positions, even for subset/reordered sheets.
+
+### Onion skins
+
+`libresprite_render_onion_skin` takes `documentId` and `frame`, with optional
+`scale`, `previous`/`next` (0–8, defaults 1), `mode: "tint" | "merge"` (default
+tint), `position: "behind" | "front"` (default behind), `opacity` (default 128),
+and `opacityStep` (default 32). Opacity values are 0–255; each additional frame of
+distance subtracts the step, clamped to 0–255.
+
+- Tint uses native red ghosts for previous frames and blue ghosts for next frames.
+  Merge uses original colors. Frames clip at sprite ends; tags never wrap playback.
+- Optional `layerId` restricts **ghosts only** to that image layer or group.
+  The current frame is still the full visible composite.
+- Native composition/order is preserved. Behind ghosts may be hidden by opaque
+  current-frame layers. Front ghosts can overlay/tint background layers at
+  reduced opacity. Use an image/group filter to focus on moving elements.
+- The result is read-only PNG image content with revision/settings metadata.
+  No selection, current frame, document pixels/history, or editor onion-skin
+  preference is changed. It works while paused and for inactive documents.
+
+### Export PNGs safely
+
+`libresprite_export_png` writes one composited `frame` with optional `scale`.
+`libresprite_export_sprite_sheet` uses the same layout options and rendering as
+contact sheets. Both require the **active** `documentId`, current
+`expectedRevision`, a resumed bridge, and a root-relative `.png` `path`.
+
+PNG bytes are encoded first, written to a private unique sibling, then published
+atomically. Existing destinations are refused unless **`overwrite: true`** is
+explicitly supplied. No-overwrite publication uses a hard link; overwrite uses
+rename. Symlink destinations, directories, and path escapes are refused. This
+is atomic publication, not a promise of power-loss durability or protection
+against other hostile processes running as your OS user.
+
+Export returns file path/byte count/revision metadata, **not image content**;
+use the corresponding preview tool to inspect before exporting. Sprite-sheet
+export includes its manifest **in the result**; it writes only the PNG, not a
+second JSON sidecar. Clients may save that manifest separately, but such a pair
+is not published as an atomic bundle.
+
+Exports do not change the document's filename, saved/modified state, selection,
+revision, or undo history. **Undo does not remove exported files.** Continue
+using native `.ase` saves to preserve editable layers and animation. On an
+uncertain timeout/disconnect, check the output and inspect rather than retrying
+an export blindly.
+
 ## Manual editing, disconnects, and safety
 
 - **Pause before editing manually.** Native pause blocks agent operations; it
@@ -218,7 +329,7 @@ Render afterwards to inspect the result.
 - Mutations target only the **active GUI document**, with explicit document,
   layer, and frame identifiers. The bridge never silently switches documents
   for an edit. Create/open visibly select the new document.
-- An edit, save, undo, or redo requires the latest revision. Revisions are
+- An edit, save, export, undo, or redo requires the latest revision. Revisions are
   derived from metadata, native history, and actual image bytes. A manual edit
   observed before a request causes `STALE_REVISION`. IDs/revisions are scoped
   to a session, not persistent file identifiers.
@@ -250,15 +361,15 @@ Render afterwards to inspect the result.
   when no automation flags are passed.
 - One bridge client and serialized short requests on the UI thread. There is
   no TCP listener, arbitrary script tool, or remote network endpoint.
-- At most a 1024×1024 canvas, 1,048,576 preview pixels, 256 frames,
+- At most a 1024×1024 canvas, 1,048,576 preview/export pixels, 256 frames,
   128 layers **including nested groups/children**, 32 open
   documents, and 32 MiB of image working data / input file size.
 - Pixel batches: 1–16,384 pixels, transparent **RGBA image layers only**.
   Background/locked layers and linked cels are refused. Colors replace pixels,
   duplicates use the last supplied color, and selection masks are not applied.
-- Palette/tag creation and editing, asset browsing, contact sheets, onion-skin
-  previews, brush engines, cross-group reparenting, and GIF/animation export are
-  not exposed yet. Multi-frame native `.ase` files can be created and saved now.
+- Palette/tag creation and editing, brush engines, cross-group reparenting,
+  packed/trimmed sprite sheets, and animated GIF/APNG export are not exposed yet.
+  Multi-frame native `.ase` files and full-canvas PNG sheets are supported.
 - The pinned editor's legacy bulk group UI and crash-recovery paths are not fully
   implemented/validated. Use the guarded MCP layer/frame operations for grouped
   structural edits, select an image child for manual drawing, and save native
@@ -290,6 +401,10 @@ durations/deletion/undo, tag ranges, and unsupported-palette guards.
 All ten new mutations are checked against session/pause/revision gates, and
 an oversized frame copy must roll back its data, saved state, and selection.
 Linked-cel and background restrictions have explicit regression cases too.
+`scripts/bridge_preview_cases.py` adds directory pagination/limits/escapes,
+detached asset loading, pixel-exact sheet tiles and padding, native ghost
+colors/opacity/layer filtering/clipping, PNG/sheet publication, and unchanged
+selection/revision/saved state/history across read-only operations and exports.
 Do not interact with that test window while it runs. The tests do not establish
 cross-platform GUI correctness or unlimited hostile-input resilience.
 
@@ -308,7 +423,10 @@ a distinct socket and asset directory; it never changes another window.
 `--animation` adds a backdrop, an effects group, and four independent twinkling
 frames using the new native tools. It verifies every frame and duration after
 saving/reopening `.ase`, and writes enlarged frame PNGs under the printed asset
-directory. Agent editing is paused at the end; you can still use LibreSprite's
+directory. It also exports a frame and sheet, compares sheet preview/export bytes,
+previews the saved asset without opening a tab, and writes an onion-skin PNG.
+The demo saves returned sheet metadata as its own separate JSON sidecar (not an
+atomic bundle). Agent editing is paused at the end; you can still use LibreSprite's
 play button to preview the animation manually.
 
 ## Native implementation notes
@@ -327,7 +445,15 @@ limits are checked before committing, so oversized edits roll back.
 Rollback may still advance native version counters; inspect again for a fresh
 revision after a limit refusal, even though pixels and history were restored.
 
-Two upstream fixes accompany this milestone:
+Directory browsing, detached loading, native onion options, sheet assembly, and
+PNG encoding reuse the same native operation path. Document previews and exports
+hold `DocumentReader` on the UI thread; export validates the revision under that
+lock without opening an undo transaction or marking the document saved. The
+shared PNG encoder uses nearest-neighbor sampling; sheet tiles include native
+compositing rather than copying raw cels. Asset previews never register their
+temporary documents or create persistent revision records.
+
+Two upstream fixes from the layer/frame milestone remain in this build:
 
 - Frame insertion at index 0 no longer reads a duration at index -1.
 - Layer counts and layer/cel iterators follow preorder through groups rather
@@ -354,4 +480,6 @@ tests, nine TypeScript/MCP tests, the baseline CLI smoke test, and the real GUI
 bridge test pass. The visible four-frame mushroom animation demonstration also
 passed end to end through MCP stdio, including grouped layers, independent cels,
 pixel-identical previews before undo/after redo, and exact frames/timing after a
-native save/reopen. Linux support is implemented but has not been tested here.
+native save/reopen. The six new tools also pass the real MCP demo, including
+byte-identical contact-sheet/export PNGs, detached thumbnails, and native onion
+previews while paused. Linux support is implemented but has not been tested here.

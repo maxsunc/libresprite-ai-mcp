@@ -1,7 +1,7 @@
 // End-to-end demonstration through the actual MCP stdio protocol. GPLv2.
 // Leaves its own editor open and paused. Never attaches to another window.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-live-demo", version: "0.2.0" });
+const client = new Client({ name: "libresprite-live-demo", version: "0.3.0" });
 const animation = process.argv.includes("--animation");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,7 +34,7 @@ async function call(name, args = {}) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 22);
+  assert.equal((await client.listTools()).tools.length, 28);
   console.log((await call("libresprite_launch")).metadata);
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -124,6 +124,28 @@ try {
       frames.push(data);
       await writeFile(path.join(assets, `frame-${frame}.png`), Buffer.from(data, "base64"));
     }
+    const exported = await call("libresprite_export_png", { documentId, expectedRevision: document.revision, frame: 3, scale: 8, path: "mushroom-frame.png" });
+    assert.equal(exported.metadata.revision, document.revision);
+    assert.deepEqual(await readFile(path.join(assets, "mushroom-frame.png")), Buffer.from(frames[3], "base64"));
+    const layout = { columns: 4, scale: 4, padding: 1 };
+    const exportedSheet = await call("libresprite_export_sprite_sheet", { documentId, expectedRevision: document.revision, path: "mushroom-sheet.png", ...layout });
+    // The bridge publishes only the PNG atomically. This optional demo-owned
+    // sidecar is written separately from the returned tool-result manifest.
+    await writeFile(path.join(assets, "mushroom-sheet.json"), JSON.stringify(exportedSheet.metadata.sheet, null, 2) + "\n", { flag: "wx" });
+    await call("libresprite_set_paused", { paused: true });
+    const sheetPreview = await call("libresprite_contact_sheet", { documentId, ...layout });
+    assert.deepEqual(exportedSheet.metadata.sheet, sheetPreview.metadata.sheet);
+    assert.deepEqual(await readFile(path.join(assets, "mushroom-sheet.png")), Buffer.from(sheetPreview.content.find((item) => item.type === "image").data, "base64"));
+    const listed = await call("libresprite_list_assets");
+    assert.ok(listed.metadata.entries.some((entry) => entry.path === filename));
+    const thumbnail = await call("libresprite_preview_asset", { path: filename, frame: 3, scale: 8 });
+    assert.equal(thumbnail.metadata.documentId, undefined);
+    assert.equal(thumbnail.content.find((item) => item.type === "image").data, frames[3]);
+    const effects = document.layers.find((layer) => layer.name === "Effects").layerId;
+    const onions = await call("libresprite_render_onion_skin", { documentId, frame: 1, layerId: effects, position: "front", scale: 8 });
+    await writeFile(path.join(assets, "mushroom-onion-skin.png"), Buffer.from(onions.content.find((item) => item.type === "image").data, "base64"));
+    assert.equal((await call("libresprite_inspect", { documentId })).metadata.revision, document.revision);
+    await call("libresprite_set_paused", { paused: false });
     const reopened = (await call("libresprite_open", { path: filename })).metadata;
     assert.deepEqual(reopened.frames.map((frame) => frame.durationMs), [100, 150, 100, 200]);
     assert.equal(reopened.layers.length, 4);
@@ -135,9 +157,10 @@ try {
   await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...document, png, assetRoot: assets }, null, 2) + "\n");
   await call("libresprite_set_paused", { paused: true });
   console.log(animation
-    ? "PASS: real MCP -> native grouped layers, shapes/strokes/fills, 4 independent frames, undo/redo, pixel-exact animation save/reopen."
+    ? "PASS: real MCP -> grouped animation, undo/redo, exact save/reopen, asset thumbnails, contact/onion previews, atomic PNG/sheet exports."
     : "PASS: real MCP stdio -> native GUI -> pixel batches -> PNG -> undo/redo -> .ase save.");
   console.log(`Preview: ${png}`);
+  if (animation) console.log(`Sprite sheet: ${path.join(assets, "mushroom-sheet.png")}`);
   console.log("The demo editor is left open and paused. Close it when finished.");
   if (animation) console.log("Agent editing is paused; use LibreSprite's play button to preview the animation.");
 } finally {

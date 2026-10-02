@@ -29,7 +29,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       let result: Record<string, unknown> = { ok: true };
       if (request.method === "status") result = { protocolVersion: 1, sessionId: "session", paused: true };
       else assert.equal(request.params.sessionId, "session");
-      if (request.method === "render") {
+      if (["render", "preview_asset", "contact_sheet", "render_onion_skin"].includes(request.method)) {
         assert.equal(request.params.scale, 1);
         result = { revision: 2, pngBase64: "iVBORw0KGgo=", frame: 0 };
       }
@@ -45,7 +45,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 22);
+    assert.equal(tools.length, 28);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -74,17 +74,36 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["draw_shape", { ...paint, shape: "rectangle", x1: 1, y1: 2, x2: 5, y2: 6 }],
       ["draw_stroke", { ...paint, points: [{ x: 0, y: 0 }] }],
       ["flood_fill", { ...paint, x: 1, y: 2 }],
+      ["list_assets", {}],
+      ["preview_asset", { path: "art.ase" }],
+      ["contact_sheet", { documentId: 1, frames: [2, 0], columns: 2 }],
+      ["render_onion_skin", { documentId: 1, frame: 0, layerId: 1 }],
+      ["export_png", { ...target, frame: 0, path: "art.png" }],
+      ["export_sprite_sheet", { ...target, path: "sheet.png", frames: [2, 0], columns: 2 }],
     ] as const;
     for (const [method, args] of valid) {
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
       assert.equal(result.isError, undefined, method);
       assert.equal(methods.at(-1), method);
+      const preview = ["preview_asset", "contact_sheet", "render_onion_skin"].includes(method);
+      assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
+      assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
     assert.equal(requests.find((item) => item.method === "draw_shape")?.params.filled, false);
     assert.equal(requests.find((item) => item.method === "flood_fill")?.params.contiguous, true);
     assert.equal(requests.find((item) => item.method === "flood_fill")?.params.tolerance, 0);
+    assert.equal(requests.find((item) => item.method === "list_assets")?.params.path, ".");
+    assert.equal(requests.find((item) => item.method === "list_assets")?.params.limit, 50);
+    assert.equal(requests.find((item) => item.method === "preview_asset")?.params.frame, 0);
+    assert.equal(requests.find((item) => item.method === "contact_sheet")?.params.padding, 0);
+    assert.equal(requests.find((item) => item.method === "render_onion_skin")?.params.mode, "tint");
+    assert.equal(requests.find((item) => item.method === "render_onion_skin")?.params.position, "behind");
+    assert.equal(requests.find((item) => item.method === "render_onion_skin")?.params.opacity, 128);
+    assert.equal(requests.find((item) => item.method === "export_png")?.params.overwrite, false);
+    assert.equal(requests.find((item) => item.method === "export_sprite_sheet")?.params.overwrite, false);
     const rejected = [
       ["create_layer", { ...target, name: "", type: "unknown" }],
       ["update_layer", { ...target, layerId: 1, opacity: 256 }],
@@ -95,6 +114,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["draw_shape", { ...paint, shape: "circle", x1: 0, y1: 0, x2: 1, y2: 1 }],
       ["draw_stroke", { ...paint, points: [] }],
       ["flood_fill", { ...paint, x: -1, y: 0 }],
+      ["list_assets", { limit: 101 }],
+      ["preview_asset", { path: "art.png", frame: 256 }],
+      ["contact_sheet", { documentId: 1, frames: [] }],
+      ["render_onion_skin", { documentId: 1, frame: 0, previous: 9 }],
+      ["export_png", { documentId: 1, frame: 0, path: "art.png" }],
+      ["export_sprite_sheet", { ...target, path: "sheet.png", columns: 17 }],
     ] as const;
     for (const [method, args] of rejected) {
       const count = methods.length;

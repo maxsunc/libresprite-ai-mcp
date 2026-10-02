@@ -6,8 +6,9 @@ will let AI agents inspect, draw, and animate sprites in the visible application
 ## Current scope
 
 The reproducible native baseline and live bridge/MCP integration are implemented,
-including layer management, drawing primitives, and basic animation. This is an
-early development integration, not yet a full artist workflow.
+including layer management, drawing primitives, animation previews, asset
+browsing, and PNG/sprite-sheet export. This is an early development integration,
+not yet a full artist workflow.
 
 The baseline has been built on Apple Silicon and passes CLI, scripting,
 pixel-exact native-file round-trip, and sprite-sheet export smoke tests.
@@ -49,8 +50,11 @@ automation flags remains disconnected from agents.
 
 Available now: document creation/opening, inspection, rendered PNG feedback,
 undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
-frames and timing, undo/redo, and native save. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **22 tools**, and limitations.
+frames and timing, undo/redo, and native save.
+
+Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
+exports are also available. See the
+[live bridge guide](docs/live-bridge.md) for setup, all **28 tools**, and limitations.
 
 ```sh
 npm test
