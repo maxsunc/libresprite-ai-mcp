@@ -31,7 +31,10 @@ AddPalette::AddPalette(Sprite* sprite, Palette& pal)
 
 void AddPalette::onExecute()
 {
-  m_stream.seekp(0);
+  // Deserialization advances the GET position, not the put position. Rewind
+  // and clear stream state on every execute/redo of this retained snapshot.
+  m_stream.clear();
+  m_stream.seekg(0);
 
   Sprite* sprite = this->sprite();
   auto pal = read_palette(m_stream);

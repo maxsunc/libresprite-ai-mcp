@@ -3,22 +3,34 @@
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
+#include "app/automation/apng.h"
 #include "app/cmd/add_cel.h"
+#include "app/cmd/add_frame_tag.h"
 #include "app/cmd/add_layer.h"
+#include "app/cmd/add_palette.h"
 #include "app/cmd/copy_cel.h"
 #include "app/cmd/move_layer.h"
 #include "app/cmd/patch_cel.h"
 #include "app/cmd/remove_layer.h"
+#include "app/cmd/remove_frame_tag.h"
+#include "app/cmd/remove_palette.h"
 #include "app/cmd/set_frame_duration.h"
+#include "app/cmd/set_frame_tag_anidir.h"
+#include "app/cmd/set_frame_tag_color.h"
+#include "app/cmd/set_frame_tag_name.h"
+#include "app/cmd/set_frame_tag_range.h"
 #include "app/cmd/set_layer_flags.h"
 #include "app/cmd/set_layer_name.h"
 #include "app/cmd/set_layer_opacity.h"
+#include "app/cmd/set_palette.h"
 #include "app/context_access.h"
 #include "app/document_api.h"
 #include "app/document_undo.h"
 #include "app/file/file.h"
+#include "app/file/gif_options.h"
 #include "app/modules/editors.h"
 #include "app/modules/gui.h"
+#include "app/modules/palettes.h"
 #include "app/transaction.h"
 #include "app/ui/editor/editor.h"
 #include "app/ui/editor/standby_state.h"
@@ -27,6 +39,7 @@
 #include "base/base64.h"
 #include "base/sha1_rfc3174.h"
 #include "doc/cel.h"
+#include "doc/cels_range.h"
 #include "doc/algorithm/floodfill.h"
 #include "doc/documents.h"
 #include "doc/frame_tag.h"
@@ -51,6 +64,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <random>
@@ -70,6 +84,7 @@ using Clock = std::chrono::steady_clock;
 constexpr size_t MaxRequest = 1024 * 1024;
 constexpr size_t MaxResponse = 8 * 1024 * 1024;
 constexpr size_t MaxPixels = 1024 * 1024;
+constexpr size_t MaxAnimationPixels = 8 * 1024 * 1024;
 
 struct BridgeError : std::runtime_error {
   std::string code;
@@ -304,6 +319,7 @@ private:
     for (frame_t frame = 0; frame < sprite->totalFrames(); ++frame)
       result["frames"].push_back({{"frame", frame}, {"durationMs", sprite->frameDuration(frame)}});
     result["palettes"] = Json::array();
+    require(sprite->getPalettes().size() <= 256, "LIMIT_EXCEEDED", "At most 256 palette keyframes are supported.");
     for (const auto& palette : sprite->getPalettes()) {
       require(palette->size() <= 4096, "LIMIT_EXCEEDED", "Palette is too large.");
       Json entries = Json::array();
@@ -311,8 +327,9 @@ private:
       result["palettes"].push_back({{"frame", palette->frame()}, {"rgbaPacked", entries}});
     }
     result["tags"] = Json::array();
+    require(sprite->frameTags().size() <= 128, "LIMIT_EXCEEDED", "At most 128 animation tags are supported.");
     for (auto tag : sprite->frameTags())
-      result["tags"].push_back({{"name", tag->name()}, {"from", tag->fromFrame()}, {"to", tag->toFrame()}, {"direction", int(tag->aniDir())}, {"color", tag->color()}});
+      result["tags"].push_back({{"tagId", tag->id()}, {"name", tag->name()}, {"from", tag->fromFrame()}, {"to", tag->toFrame()}, {"direction", int(tag->aniDir())}, {"color", tag->color()}});
     result["canUndo"] = document->undoHistory()->canUndo();
     result["canRedo"] = document->undoHistory()->canRedo();
     return result;
@@ -539,7 +556,7 @@ private:
     addPng(result, encodePng(sheet.image.get()));
     return result;
   }
-  void publishPng(const fs::path& path, const std::vector<uint8_t>& bytes, bool overwrite) {
+  void publishExport(const fs::path& path, const std::vector<uint8_t>& bytes, bool overwrite) {
     auto status = fs::symlink_status(path);
     require(!fs::is_symlink(status) && !fs::is_directory(status), "INVALID_PATH", "Refusing to export over a symlink or directory.");
     require(overwrite || !fs::exists(status), "FILE_EXISTS", "Destination exists; explicitly allow overwrite or choose another filename.");
@@ -552,15 +569,15 @@ private:
       while (written < bytes.size()) {
         auto count = write(fd, bytes.data() + written, bytes.size() - written);
         if (count < 0 && errno == EINTR) continue;
-        require(count > 0, "IO_ERROR", "Cannot write PNG export.");
+        require(count > 0, "IO_ERROR", "Cannot write export.");
         written += size_t(count);
       }
       int closeResult = close(fd); fd = -1;
-      require(closeResult == 0, "IO_ERROR", "Cannot finish PNG export.");
+      require(closeResult == 0, "IO_ERROR", "Cannot finish export.");
       if (overwrite) fs::rename(temporary.data(), path);
       else {
         auto published = link(temporary.data(), path.c_str());
-        require(published == 0, errno == EEXIST ? "FILE_EXISTS" : "IO_ERROR", "Could not publish PNG; destination may have appeared during export.");
+        require(published == 0, errno == EEXIST ? "FILE_EXISTS" : "IO_ERROR", "Could not publish export; destination may have appeared during export.");
         unlink(temporary.data());
       }
     } catch (...) { if (fd >= 0) close(fd); unlink(temporary.data()); throw; }
@@ -586,7 +603,198 @@ private:
     result["path"] = path.lexically_relative(m_root).generic_string(); result["bytes"] = bytes.size();
     // Prepare/check the entire result before any file-system side effect.
     require(result.dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Export metadata exceeds the bridge limit.");
-    publishPng(path, bytes, overwrite);
+    publishExport(path, bytes, overwrite);
+    return result;
+  }
+  FrameTag* findTag(Sprite* sprite, const Json& params) {
+    auto tag = sprite->frameTags().getById(integer(params, "tagId", 1, INT32_MAX));
+    require(tag, "TAG_NOT_FOUND", "Tag no longer exists in this document.");
+    return tag;
+  }
+  AniDir tagDirection(const Json& params) {
+    auto value = text(params, "direction", 16);
+    require(value == "forward" || value == "reverse" || value == "pingpong", "INVALID_PARAMS", "direction must be forward, reverse, or pingpong.");
+    return value == "forward" ? AniDir::FORWARD : value == "reverse" ? AniDir::REVERSE : AniDir::PING_PONG;
+  }
+  Json editTags(Document* document, const Json& params, const std::string& method) {
+    auto sprite = document->sprite();
+    if (method == "remove_tag") {
+      auto tag = findTag(sprite, params);
+      Transaction transaction(UIContext::instance(), "AI remove tag");
+      transaction.execute(new cmd::RemoveFrameTag(sprite, tag));
+      finish(transaction, document);
+      return Json::object();
+    }
+    bool creating = method == "create_tag";
+    auto tag = creating ? nullptr : findTag(sprite, params);
+    if (creating) require(sprite->frameTags().size() < 128, "LIMIT_EXCEEDED", "At most 128 tags are supported.");
+    else require(params.contains("name") || params.contains("from") || params.contains("to") || params.contains("direction") || params.contains("color"), "INVALID_PARAMS", "Provide at least one tag property.");
+    auto name = creating || params.contains("name") ? text(params, "name", 120) : tag->name();
+    int from = creating || params.contains("from") ? integer(params, "from", 0, sprite->lastFrame()) : tag->fromFrame();
+    int to = creating || params.contains("to") ? integer(params, "to", 0, sprite->lastFrame()) : tag->toFrame();
+    require(from <= to, "INVALID_PARAMS", "Tag from must not exceed to.");
+    auto direction = params.contains("direction") ? tagDirection(params) : creating ? AniDir::FORWARD : tag->aniDir();
+    auto tint = params.contains("color") ? color(params) : creating ? rgba(0, 0, 0, 255) : tag->color();
+    require(rgba_geta(tint) == 255, "INVALID_PARAMS", "Tag label colors must be opaque (a=255).");
+    if (creating) {
+      std::unique_ptr<FrameTag> created(new FrameTag(from, to));
+      created->setName(name); created->setAniDir(direction); created->setColor(tint);
+      auto id = created->id();
+      Transaction transaction(UIContext::instance(), "AI create tag");
+      transaction.execute(new cmd::AddFrameTag(sprite, created.get())); created.release();
+      finish(transaction, document);
+      return {{"createdTagId", id}};
+    }
+    if (tag->name() != name || tag->fromFrame() != from || tag->toFrame() != to || tag->aniDir() != direction || tag->color() != tint) {
+      Transaction transaction(UIContext::instance(), "AI tag properties");
+      if (tag->name() != name) transaction.execute(new cmd::SetFrameTagName(tag, name));
+      if (tag->fromFrame() != from || tag->toFrame() != to) transaction.execute(new cmd::SetFrameTagRange(tag, from, to));
+      if (tag->aniDir() != direction) transaction.execute(new cmd::SetFrameTagAniDir(tag, direction));
+      if (tag->color() != tint) transaction.execute(new cmd::SetFrameTagColor(tag, tint));
+      finish(transaction, document);
+    }
+    return Json::object();
+  }
+  void validateIndexedPalette(Sprite* sprite, int frame, int size) {
+    if (sprite->pixelFormat() != IMAGE_INDEXED) return;
+    require(sprite->transparentColor() < size, "PALETTE_INDEX_IN_USE", "New palette size excludes the transparent index. No automatic index remapping is performed.");
+    int end = sprite->totalFrames();
+    for (auto palette : sprite->getPalettes()) if (palette->frame() > frame) { end = palette->frame(); break; }
+    for (auto cel : sprite->cels()) {
+      if (cel->frame() < frame || cel->frame() >= end) continue;
+      auto image = cel->image();
+      for (int y = 0; y < image->height(); ++y)
+        for (int x = 0; x < image->width(); ++x)
+          require(image->getPixel(x, y) < color_t(size), "PALETTE_INDEX_IN_USE", "New palette size excludes a cel's pixel index (including hidden/off-canvas pixels). No automatic remapping is performed.");
+    }
+  }
+  void editPalette(Document* document, const Json& params, bool removing) {
+    auto sprite = document->sprite();
+    require(sprite->pixelFormat() != IMAGE_GRAYSCALE, "UNSUPPORTED_COLOR_MODE", "Grayscale sprites use a fixed grayscale ramp.");
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    auto palette = sprite->palette(frame);
+    if (removing) {
+      require(frame > 0, "BASE_PALETTE", "The frame-zero palette cannot be removed.");
+      require(palette->frame() == frame, "PALETTE_NOT_FOUND", "No palette keyframe exists at this frame.");
+      validateIndexedPalette(sprite, frame, sprite->palette(frame - 1)->size());
+      Transaction transaction(UIContext::instance(), "AI remove palette keyframe");
+      transaction.execute(new cmd::RemovePalette(sprite, *palette));
+      finish(transaction, document);
+      return;
+    }
+    require(palette->size() <= 256, "UNSUPPORTED_PALETTE", "Palette editing currently supports palettes of at most 256 colors.");
+    require(params.contains("size") || params.contains("entries"), "INVALID_PARAMS", "Provide entries and/or size.");
+    int size = params.contains("size") ? integer(params, "size", 1, 256) : palette->size();
+    auto changed = palette->clone(); changed->resize(size); changed->setFrame(frame);
+    if (params.contains("entries")) {
+      require(params["entries"].is_array() && !params["entries"].empty() && params["entries"].size() <= 256, "INVALID_PARAMS", "Provide 1 to 256 unique palette entries.");
+      std::vector<int> indices;
+      for (auto entry : params["entries"]) {
+        int index = integer(entry, "index", 0, size - 1);
+        require(std::find(indices.begin(), indices.end(), index) == indices.end(), "INVALID_PARAMS", "Palette entry indices must be unique.");
+        indices.push_back(index); changed->setEntry(index, color(entry));
+      }
+    }
+    if (*palette == *changed) return;
+    validateIndexedPalette(sprite, frame, size);
+    Transaction transaction(UIContext::instance(), "AI palette keyframe");
+    // SetPalette edits the EFFECTIVE palette, so only use it at an exact key.
+    if (palette->frame() == frame) transaction.execute(new cmd::SetPalette(sprite, frame, *changed));
+    else transaction.execute(new cmd::AddPalette(sprite, *changed));
+    finish(transaction, document);
+  }
+  std::vector<int> animationFrames(Sprite* sprite, const Json& params) {
+    require(!(params.contains("tagId") && params.contains("frames")), "INVALID_PARAMS", "Choose either tagId or frames, not both.");
+    std::vector<int> frames;
+    if (params.contains("tagId")) {
+      auto tag = findTag(sprite, params);
+      require(tag->fromFrame() >= 0 && tag->toFrame() <= sprite->lastFrame() && tag->fromFrame() <= tag->toFrame(), "INVALID_PARAMS", "Tag range is outside this sprite.");
+      require(int(tag->aniDir()) >= 0 && int(tag->aniDir()) <= 2, "INVALID_PARAMS", "Unsupported tag direction.");
+      for (int frame = tag->fromFrame(); frame <= tag->toFrame(); ++frame) frames.push_back(frame);
+      if (tag->aniDir() == AniDir::REVERSE) std::reverse(frames.begin(), frames.end());
+      else if (tag->aniDir() == AniDir::PING_PONG)
+        for (int frame = tag->toFrame() - 1; frame > tag->fromFrame(); --frame) frames.push_back(frame);
+    } else if (params.contains("frames")) {
+      require(params["frames"].is_array() && !params["frames"].empty() && params["frames"].size() <= 256, "INVALID_PARAMS", "Provide 1 to 256 animation frame indices, or omit for all.");
+      for (auto frame : params["frames"]) frames.push_back(integer({{"frame", frame}}, "frame", 0, sprite->lastFrame()));
+    } else for (int frame = 0; frame < sprite->totalFrames(); ++frame) frames.push_back(frame);
+    return frames;
+  }
+  std::vector<uint8_t> encodeGif(Sprite* sprite, bool loop) {
+    std::unique_ptr<Document> detached(new Document(sprite));
+    detached->setFormatOptions(base::SharedPtr<FormatOptions>(new GifOptions(false, loop)));
+    std::string pattern = (m_root / ".libresprite-gif-XXXXXX.gif").string();
+    std::vector<char> temporary(pattern.begin(), pattern.end()); temporary.push_back('\0');
+    int fd = mkstemps(temporary.data(), 4);
+    require(fd >= 0, "IO_ERROR", "Cannot create native GIF encoding file."); close(fd);
+    try {
+      std::unique_ptr<FileOp> operation(FileOp::createSaveDocumentOperation(nullptr, detached.get(), temporary.data(), ""));
+      require(operation && !operation->hasError(), "EXPORT_FAILED", operation ? operation->error() : "Cannot create native GIF save operation.");
+      operation->operate(); operation->done();
+      require(!operation->hasError(), "EXPORT_FAILED", operation->error());
+      auto size = fs::file_size(temporary.data());
+      require(size > 0 && size <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Encoded GIF exceeds the 32 MiB file limit.");
+      std::ifstream input(temporary.data(), std::ios::binary);
+      std::vector<uint8_t> bytes(size);
+      input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+      require(bool(input), "IO_ERROR", "Cannot read native GIF output.");
+      unlink(temporary.data());
+      return bytes;
+    } catch (...) { unlink(temporary.data()); throw; }
+  }
+  Json exportAnimation(Document* document, const Json& params) {
+    auto path = filePath(params, true);
+    auto format = text(params, "format", 8);
+    require(format == "gif" || format == "apng", "INVALID_PARAMS", "format must be gif or apng.");
+    require(path.extension() == "." + format, "INVALID_PATH", "Animation path extension must match .gif or .apng format.");
+    bool loop = params.contains("loop") ? boolean(params, "loop") : true;
+    bool overwrite = params.contains("overwrite") ? boolean(params, "overwrite") : false;
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    auto source = document->sprite();
+    auto frames = animationFrames(source, params);
+    size_t pixels = size_t(source->width()) * source->height() * scale * scale;
+    require(pixels <= MaxPixels && pixels * frames.size() <= MaxAnimationPixels, "LIMIT_EXCEEDED", "Animation exceeds 1,048,576 pixels per frame or 8,388,608 total output pixels. Reduce frames or scale.");
+    auto result = previewMetadata(document);
+    result["format"] = format; result["loop"] = loop; result["scale"] = scale;
+    result["outputWidth"] = source->width() * scale; result["outputHeight"] = source->height() * scale;
+    result["animationFrames"] = Json::array();
+    std::unique_ptr<Sprite> gif;
+    LayerImage* layer = nullptr;
+    if (format == "gif") {
+      gif.reset(new Sprite(IMAGE_RGB, source->width() * scale, source->height() * scale, 256));
+      gif->setTotalFrames(frames.size());
+      layer = new LayerImage(gif.get()); gif->folder()->addLayer(layer);
+    }
+    automation::ApngEncoder apng(frames.size(), loop);
+    for (size_t i = 0; i < frames.size(); ++i) {
+      int duration = source->frameDuration(frames[i]);
+      require(duration >= 1 && duration <= 65535, "INVALID_PARAMS", "Animation durations must be 1 to 65,535 ms.");
+      // GIF delay fields are centiseconds. Avoid zero-delay viewer-dependent GIFs.
+      require(format != "gif" || duration >= 10, "UNSUPPORTED_TIMING", "GIF requires durations of at least 10 ms. Use APNG for shorter exact timing.");
+      result["animationFrames"].push_back({{"frame", frames[i]}, {"durationMs", duration}, {"encodedDurationMs", format == "gif" ? (duration / 10) * 10 : duration}});
+      auto image = composite(source, frames[i]);
+      if (gif) {
+        ImageRef scaled(Image::create(IMAGE_RGB, gif->width(), gif->height()));
+        for (int y = 0; y < scaled->height(); ++y)
+          for (int x = 0; x < scaled->width(); ++x) scaled->putPixel(x, y, image->getPixel(x / scale, y / scale));
+        layer->addCel(std::make_shared<Cel>(i, scaled));
+        gif->setFrameDuration(i, duration);
+      } else {
+        try { apng.append(encodePng(image.get(), scale), duration); }
+        catch (const std::length_error& error) { throw BridgeError("LIMIT_EXCEEDED", error.what()); }
+        catch (const std::runtime_error& error) { throw BridgeError("EXPORT_FAILED", error.what()); }
+      }
+    }
+    std::vector<uint8_t> bytes;
+    if (gif) bytes = encodeGif(gif.release(), loop);
+    else {
+      try { bytes = apng.finish(); }
+      catch (const std::length_error& error) { throw BridgeError("LIMIT_EXCEEDED", error.what()); }
+      catch (const std::runtime_error& error) { throw BridgeError("EXPORT_FAILED", error.what()); }
+    }
+    result["path"] = path.lexically_relative(m_root).generic_string(); result["bytes"] = bytes.size();
+    require(result.dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Animation metadata exceeds the bridge limit.");
+    publishExport(path, bytes, overwrite);
     return result;
   }
   Layer* paintLayer(Document* document, const Json& params) {
@@ -875,9 +1083,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.3.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.4.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -926,10 +1134,10 @@ private:
       return renderFrame(document, params);
     }
     require(ctx->activeDocument() == document, "INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.");
-    if (method == "export_png" || method == "export_sprite_sheet") {
+    if (method == "export_png" || method == "export_sprite_sheet" || method == "export_animation") {
       DocumentReader reader(document, 0);
       checkRevision(document, params);
-      return exportPng(document, params, method == "export_sprite_sheet");
+      return method == "export_animation" ? exportAnimation(document, params) : exportPng(document, params, method == "export_sprite_sheet");
     }
     // Check and mutate under the same lock, on the same UI tick.
     ContextWriter writer(ctx, 0);
@@ -945,6 +1153,10 @@ private:
       extra = editLayers(document, params, method);
     } else if (method == "add_frame" || method == "remove_frame" || method == "set_frame_duration") {
       extra = editFrames(document, params, method);
+    } else if (method == "set_palette" || method == "remove_palette") {
+      editPalette(document, params, method == "remove_palette");
+    } else if (method == "create_tag" || method == "update_tag" || method == "remove_tag") {
+      extra = editTags(document, params, method);
     } else if (method == "undo" || method == "redo") {
       auto history = document->undoHistory();
       require(method == "undo" ? history->canUndo() : history->canRedo(), "NO_HISTORY", "No matching undo/redo state.");
@@ -961,6 +1173,10 @@ private:
     // Match native New Layer/New Frame behavior, including the user's existing
     // auto-show preference. Visible timeline rows are safe for group layers.
     if (method == "create_layer" || method == "add_frame") App::instance()->mainWindow()->popTimeline();
+    if (method == "set_palette" || method == "remove_palette" || method == "undo" || method == "redo") {
+      set_current_palette(document->sprite()->palette(ctx->activeEditor()->frame()), false);
+      ui::Manager::getDefault()->invalidate();
+    }
     update_screen_for_document(document);
     auto result = inspect(document);
     result.update(extra);

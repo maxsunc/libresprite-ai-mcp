@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-live-demo", version: "0.3.0" });
+const client = new Client({ name: "libresprite-live-demo", version: "0.4.0" });
 const animation = process.argv.includes("--animation");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,7 +34,7 @@ async function call(name, args = {}) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 28);
+  assert.equal((await client.listTools()).tools.length, 34);
   console.log((await call("libresprite_launch")).metadata);
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -111,6 +111,19 @@ try {
   const afterRedo = await call("libresprite_render", { documentId, frame: previewFrame, scale: 8 });
   const image = afterRedo.content.find((item) => item.type === "image");
   assert.equal(image.data, beforeUndo.content.find((item) => item.type === "image").data);
+  let tagId;
+  if (animation) {
+    const swatches = [[0, 0, 0, 0], [27, 35, 60, 255], ...["O", "R", "W", "C", "G"].map((name) => [...palette[name], 255])];
+    await mutate("set_palette", { frame: 0, size: swatches.length, entries: swatches.map(([r, g, b, a], index) => ({ index, color: { r, g, b, a } })) });
+    tagId = (await mutate("create_tag", { name: "Sparkle loop", from: 0, to: 3, color: { r: 60, g: 157, b: 126, a: 255 } })).createdTagId;
+    await mutate("update_tag", { tagId, direction: "pingpong" });
+    await mutate("undo", {});
+    assert.equal(document.tags.find((tag) => tag.tagId === tagId).direction, 0);
+    await mutate("redo", {});
+    assert.equal(document.tags.find((tag) => tag.tagId === tagId).direction, 2);
+    await mutate("update_tag", { tagId, direction: "forward" });
+    assert.equal((await call("libresprite_render", { documentId, frame: previewFrame, scale: 8 })).content.find((item) => item.type === "image").data, image.data);
+  }
   const filename = animation ? "mushroom-animation.ase" : "mushroom.ase";
   document = (await call("libresprite_save", { documentId, expectedRevision: document.revision, path: filename })).metadata;
   assert.equal(document.modified, false);
@@ -127,6 +140,13 @@ try {
     const exported = await call("libresprite_export_png", { documentId, expectedRevision: document.revision, frame: 3, scale: 8, path: "mushroom-frame.png" });
     assert.equal(exported.metadata.revision, document.revision);
     assert.deepEqual(await readFile(path.join(assets, "mushroom-frame.png")), Buffer.from(frames[3], "base64"));
+    for (const format of ["gif", "apng"]) {
+      const exportedAnimation = await call("libresprite_export_animation", { documentId, expectedRevision: document.revision, path: `mushroom-animation.${format}`, format, tagId, scale: 8 });
+      assert.equal(exportedAnimation.metadata.revision, document.revision);
+      assert.deepEqual(exportedAnimation.metadata.animationFrames.map((frame) => frame.frame), [0, 1, 2, 3]);
+      assert.deepEqual(exportedAnimation.metadata.animationFrames.map((frame) => frame.encodedDurationMs), [100, 150, 100, 200]);
+      await writeFile(path.join(assets, `mushroom-${format}-export.json`), JSON.stringify(exportedAnimation.metadata, null, 2) + "\n", { flag: "wx" });
+    }
     const layout = { columns: 4, scale: 4, padding: 1 };
     const exportedSheet = await call("libresprite_export_sprite_sheet", { documentId, expectedRevision: document.revision, path: "mushroom-sheet.png", ...layout });
     // The bridge publishes only the PNG atomically. This optional demo-owned
@@ -149,6 +169,8 @@ try {
     const reopened = (await call("libresprite_open", { path: filename })).metadata;
     assert.deepEqual(reopened.frames.map((frame) => frame.durationMs), [100, 150, 100, 200]);
     assert.equal(reopened.layers.length, 4);
+    assert.deepEqual(reopened.palettes, document.palettes);
+    assert.deepEqual(reopened.tags.map(({ tagId, ...tag }) => tag), document.tags.map(({ tagId, ...tag }) => tag));
     for (let frame = 0; frame < 4; frame++) {
       const rendered = await call("libresprite_render", { documentId: reopened.documentId, frame, scale: 8 });
       assert.equal(rendered.content.find((item) => item.type === "image").data, frames[frame]);
@@ -157,10 +179,11 @@ try {
   await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...document, png, assetRoot: assets }, null, 2) + "\n");
   await call("libresprite_set_paused", { paused: true });
   console.log(animation
-    ? "PASS: real MCP -> grouped animation, undo/redo, exact save/reopen, asset thumbnails, contact/onion previews, atomic PNG/sheet exports."
+    ? "PASS: real MCP -> grouped animation, palettes/tags/undo, exact save/reopen, asset previews, atomic PNG/sheet/GIF/APNG exports."
     : "PASS: real MCP stdio -> native GUI -> pixel batches -> PNG -> undo/redo -> .ase save.");
   console.log(`Preview: ${png}`);
   if (animation) console.log(`Sprite sheet: ${path.join(assets, "mushroom-sheet.png")}`);
+  if (animation) console.log(`Animated exports: ${path.join(assets, "mushroom-animation.gif")} and .apng`);
   console.log("The demo editor is left open and paused. Close it when finished.");
   if (animation) console.log("Agent editing is paused; use LibreSprite's play button to preview the animation.");
 } finally {

@@ -45,7 +45,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 28);
+    assert.equal(tools.length, 34);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -80,6 +80,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["render_onion_skin", { documentId: 1, frame: 0, layerId: 1 }],
       ["export_png", { ...target, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", frames: [2, 0], columns: 2 }],
+      ["set_palette", { ...target, frame: 0, size: 2, entries: [{ index: 1, color: paint.color }] }],
+      ["remove_palette", { ...target, frame: 1 }],
+      ["create_tag", { ...target, name: "Walk", from: 0, to: 2 }],
+      ["update_tag", { ...target, tagId: 1, direction: "pingpong" }],
+      ["remove_tag", { ...target, tagId: 1 }],
+      ["export_animation", { ...target, path: "walk.apng", format: "apng", frames: [2, 0, 2] }],
     ] as const;
     for (const [method, args] of valid) {
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
@@ -104,6 +110,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "render_onion_skin")?.params.opacity, 128);
     assert.equal(requests.find((item) => item.method === "export_png")?.params.overwrite, false);
     assert.equal(requests.find((item) => item.method === "export_sprite_sheet")?.params.overwrite, false);
+    assert.equal(requests.find((item) => item.method === "create_tag")?.params.direction, "forward");
+    assert.equal(requests.find((item) => item.method === "export_animation")?.params.loop, true);
+    assert.equal(requests.find((item) => item.method === "export_animation")?.params.scale, 1);
+    assert.equal(requests.find((item) => item.method === "export_animation")?.params.overwrite, false);
     const rejected = [
       ["create_layer", { ...target, name: "", type: "unknown" }],
       ["update_layer", { ...target, layerId: 1, opacity: 256 }],
@@ -120,6 +130,13 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["render_onion_skin", { documentId: 1, frame: 0, previous: 9 }],
       ["export_png", { documentId: 1, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", columns: 17 }],
+      ["set_palette", { ...target, frame: 0, size: 257 }],
+      ["set_palette", { ...target, frame: 0, entries: [] }],
+      ["remove_palette", { ...target, frame: 256 }],
+      ["create_tag", { ...target, name: "Walk", from: 0, to: 2, direction: "backwards" }],
+      ["update_tag", { ...target, tagId: 1, color: { ...paint.color, a: 128 } }],
+      ["remove_tag", { ...target, tagId: 0 }],
+      ["export_animation", { ...target, path: "walk.gif", format: "mp4" }],
     ] as const;
     for (const [method, args] of rejected) {
       const count = methods.length;

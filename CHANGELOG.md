@@ -1,5 +1,24 @@
 # Development milestones
 
+## 0.4.0 — Palettes, animation tags, and GIF/APNG export
+
+- 34 MCP tools: added sparse palette editing/resizing, palette-keyframe removal,
+  animation-tag creation/atomic properties/deletion, and GIF/APNG export.
+- Palette edits use exact frame keys; changed inherited colors create a keyframe
+  without changing earlier frames. Indexed shrink/removal validates all affected
+  cel indices, including hidden nested/off-canvas pixels. Identical palette/tag
+  requests preserve history; grayscale palette edits remain unsupported.
+- Inspection reports tag IDs; tags preserve native frame-range maintenance and
+  undo/redo. Export can expand forward/reverse/pingpong tags or ordered frames.
+- GIF uses the native encoder on a detached rendered sprite, with binary alpha,
+  native palette quantization, and reported centisecond timing. APNG uses native
+  RGBA PNG frames and a GUI-independent chunk assembler for lossless color/alpha
+  and exact millisecond delays. Both publish one file atomically, guard active
+  document/session/revision/pause, and preserve document and preference state.
+- Fixes upstream palette snapshot rewind on redo and removal undo redispatch.
+- Adds independent GIF/APNG decoding checks, native APNG malformed-input/limit
+  tests, and expanded disposable-GUI/real-MCP animated-export demos.
+
 ## 0.3.0 — Asset browsing, animation previews, and PNG export
 
 - 28 MCP tools: added root-restricted directory browsing, detached asset

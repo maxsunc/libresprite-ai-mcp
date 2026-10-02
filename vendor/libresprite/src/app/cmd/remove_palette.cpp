@@ -28,7 +28,9 @@ void RemovePalette::onExecute()
 
 void RemovePalette::onUndo()
 {
-  AddPalette::onRedo();
+  // Calling inherited Cmd::onRedo() redispatches virtually to our removal
+  // onExecute(), so restoring a keyframe must explicitly execute the add.
+  AddPalette::onExecute();
 }
 
 } // namespace cmd

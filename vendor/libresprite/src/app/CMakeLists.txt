@@ -458,6 +458,7 @@ add_library(app-lib
   ui/zoom_entry.cpp
   ui_context.cpp
   automation/bridge.cpp
+  automation/apng.cpp
   util/autocrop.cpp
   util/clipboard.cpp
   util/clipboard_native.cpp

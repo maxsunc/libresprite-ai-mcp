@@ -105,6 +105,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_render_onion_skin` | Read-only native ghost-frame preview |
 | `libresprite_export_png` | Atomic composited frame PNG export |
 | `libresprite_export_sprite_sheet` | Atomic PNG sheet export with returned layout/timing metadata |
+| `libresprite_export_animation` | Atomic GIF or lossless RGBA APNG export |
 | `libresprite_create` | New single-frame transparent RGBA sprite |
 | `libresprite_open` | Open PNG or a native sprite inside the root |
 | `libresprite_set_pixels` | Atomic replacement-color pixel batch |
@@ -115,13 +116,18 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_add_frame` | Insert a blank frame or independent copy |
 | `libresprite_remove_frame` | Delete a frame, keeping at least one |
 | `libresprite_set_frame_duration` | Frame timing in milliseconds |
+| `libresprite_set_palette` | Undoable sparse palette entries and/or resize at a frame |
+| `libresprite_remove_palette` | Undoably remove a nonzero palette keyframe |
+| `libresprite_create_tag` | New native animation tag with inclusive range |
+| `libresprite_update_tag` | Atomic tag name/range/direction/label color |
+| `libresprite_remove_tag` | Undoably delete one tag by explicit ID |
 | `libresprite_draw_shape` | Native line, rectangle, or ellipse |
 | `libresprite_draw_stroke` | Connected one-pixel polyline |
 | `libresprite_flood_fill` | Contiguous fill or all matching colors in a target cel |
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **28 tools** in server/bridge version **0.3.0**. Rebuild the editor
+There are **34 tools** in server/bridge version **0.4.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -214,6 +220,79 @@ Render afterwards to inspect the result.
 - Structural frame edits refuse locked layers and sprites with per-frame palette
   changes: upstream does not yet shift those palettes safely. They are not
   silently flattened or discarded. Duration-only edits remain available.
+
+## Palettes and animation tags
+
+These mutations require the active document, current revision, and resumed bridge,
+and use one native undo transaction per request. They leave GUI layer/frame
+selection alone. Save `.ase` regularly to preserve this editable metadata.
+
+### Palette keyframes
+
+`libresprite_set_palette` requires `frame` and one or both of:
+
+- `entries`: 1–256 unique `{ "index": n, "color": { "r", "g", "b", "a" } }`
+  pairs. Indices must be inside the **final** palette size; entries replace RGBA
+  swatches, not blend them. Unspecified entries are retained.
+- `size`: 1–256 colors. New entries use native palette resize defaults (opaque
+  black); supply explicit colors if you want a particular ramp.
+
+The effective palette at a frame may be inherited from an earlier keyframe.
+If colors/size actually change, the bridge edits an exact existing key or creates
+one **at the requested frame**. It never changes an earlier inherited keyframe
+implicitly. The new palette applies through the frame before the next keyframe.
+Identical effective colors/size are a **no-op**, not a redundant keyframe, and
+do not consume history or clear redo.
+
+For RGBA sprites, these are **swatches**: existing RGBA pixels do not change.
+For indexed sprites, editing an entry recolors all pixels using that index in
+the affected frame interval, including locked layers, just like native palette
+editing. Index bytes are not remapped. A shrink refuses any excluded transparent
+index or cel pixel index, including hidden layers/groups and off-canvas pixels.
+Use a separate remapping workflow in the editor if index consolidation is needed.
+
+```json
+{
+  "documentId": 3, "expectedRevision": 12, "frame": 0, "size": 4,
+  "entries": [
+    { "index": 0, "color": { "r": 0, "g": 0, "b": 0, "a": 0 } },
+    { "index": 1, "color": { "r": 220, "g": 50, "b": 60, "a": 255 } }
+  ]
+}
+```
+
+`libresprite_remove_palette` removes an **exact** keyframe at `frame > 0`;
+that interval then inherits the preceding palette. Frame-zero base palettes
+cannot be removed. Indexed removal is refused if the preceding palette would
+exclude any affected cel/transparent index. Removal and sparse edits are undoable,
+including repeated undo/redo of added or removed keys.
+
+Grayscale palettes are a fixed ramp and are not editable through these tools.
+Editing existing palettes larger than 256 entries is also refused. Inspection
+still supports up to 4,096 entries per palette and 256 palette keyframes, with
+frame indices and packed RGBA values (`r | g<<8 | b<<16 | a<<24`). Native frame
+insertion/removal **still refuses multi-palette sprites**; remove nonzero keys
+explicitly before structural frame edits, or use duration-only edits.
+
+### Native tags
+
+- `libresprite_create_tag` takes `name` (1–120 UTF-8 bytes), inclusive zero-based
+  `from`/`to`, optional `direction: "forward" | "reverse" | "pingpong"`
+  (default forward), and optional RGBA label `color` (default opaque black).
+  Label colors must have **`a: 255`**; native tag files do not preserve alpha.
+  It returns `createdTagId`; inspection includes `tagId` on every tag.
+- `libresprite_update_tag` takes a `tagId` and at least one name/range/direction/
+  color property. The final range must be inside the sprite and `from <= to`.
+  All fields validate before one atomic transaction; identical values are a no-op.
+- `libresprite_remove_tag` deletes only the tag, not its frames or pixels.
+  Native undo restores the same tag ID within the editor session.
+
+There are at most **128 tags**. Overlaps and duplicate names are allowed;
+explicit IDs disambiguate them. IDs belong to a document/editor session, not to
+the file on disk—inspect for fresh IDs after reopening. Inspection/sheet manifests
+report numeric directions (`0` forward, `1` reverse, `2` pingpong); mutation tools
+accept the readable names above. Existing native insertion/deletion commands
+continue to adjust tag ranges.
 
 ## Asset browsing, animation previews, and export
 
@@ -320,6 +399,73 @@ using native `.ase` saves to preserve editable layers and animation. On an
 uncertain timeout/disconnect, check the output and inspect rather than retrying
 an export blindly.
 
+### Animated GIF and APNG
+
+`libresprite_export_animation` publishes one animated file, using the same
+root-relative path, active-document/revision/session/pause, overwrite, and atomic
+publication safeguards as PNG export. Specify `format: "gif"` with a `.gif`
+path or `format: "apng"` with a `.apng` path. No document state, filename,
+saved state, undo history, or GIF options/preferences are changed. Exported files
+are not undoable. The result is metadata, not MCP animated-image content.
+
+Optional settings:
+
+| Setting | Behavior |
+| --- | --- |
+| `frames` | 1–256 source indices in supplied order; repeats are allowed |
+| `tagId` | Export one tag using its inclusive range and native direction |
+| `scale` | Nearest-neighbor 1–16 (default 1) |
+| `loop` | `true` (default) plays forever; `false` plays once |
+| `overwrite` | Defaults false; explicit true permits atomic replacement |
+
+Omit both `frames` and `tagId` for all source frames in forward order. They are
+**mutually exclusive**. Tag pingpong order omits duplicated endpoints:
+`0,1,2,1` for range 0–2, or a single step for a one-frame tag. At most 510 steps
+are generated from a 256-frame tag. Each step uses its source frame's duration.
+For a nonlooping pingpong export, the final descending step is emitted once,
+without adding the initial endpoint again.
+
+```json
+{
+  "documentId": 3, "expectedRevision": 14,
+  "path": "animations/walk.apng", "format": "apng",
+  "tagId": 27, "scale": 4, "loop": true
+}
+```
+
+The destination directory must already exist. The result reports `format`,
+`loop`, output dimensions/scale, path/byte count, revision, and an ordered
+`animationFrames` array. Each entry has source `frame`, `durationMs`, and
+`encodedDurationMs`; repeated/pingpong steps are explicit in the array.
+
+- **GIF:** the native encoder processes a detached flattened RGBA sprite and
+  quantizes each frame to at most 256 colors (including transparency). Alpha below
+  128 becomes transparent; alpha 128 or greater becomes opaque. No dithering is
+  requested. GIF delay fields are centiseconds, so duration rounds **down** to
+  the nearest 10 ms (`157 → 150`). Durations below 10 ms are refused with
+  `UNSUPPORTED_TIMING`, avoiding viewer-dependent zero-delay playback. Use APNG
+  for exact colors, partial alpha, or shorter timing. Viewers can still clamp
+  very short GIF delays; encoded timing is not a playback-rate guarantee.
+- **APNG:** native frame composites are encoded with the existing RGBA PNG
+  encoder and assembled into full-canvas animation chunks. It preserves rendered
+  RGBA bytes and exact 1–65,535 ms delays (denominator 1,000). Every frame uses
+  SOURCE blending and NONE disposal, so transparent pixels replace older content
+  rather than leaving ghost trails. No trimming, interlacing, or frame-delta
+  optimization is performed. Viewers still decide actual playback scheduling.
+
+Animation export limits: **1,048,576 output pixels per frame**, **8,388,608
+output pixels summed across emitted steps**, and **32 MiB encoded-file bytes**.
+All frames count toward the pixel budget, even repeated or blank frames. Reduce
+frames or scale if refused. The native GIF encoder may briefly use a private
+root-level `.libresprite-gif-*` scratch file; final publication remains atomic,
+and failure cleans up scratch/publication files without touching the destination.
+
+The editor/bridge open and thumbnail tools still accept only native sprites
+and ordinary `.png` assets. `.gif`/`.apng` exports are not listed or opened by
+those tools yet; inspect the source with contact/onion previews and view exported
+animations in a compatible image/browser viewer. APNG round-trip editing is not
+supported—save `.ase` to retain the editable sprite.
+
 ## Manual editing, disconnects, and safety
 
 - **Pause before editing manually.** Native pause blocks agent operations; it
@@ -361,15 +507,17 @@ an export blindly.
   when no automation flags are passed.
 - One bridge client and serialized short requests on the UI thread. There is
   no TCP listener, arbitrary script tool, or remote network endpoint.
-- At most a 1024×1024 canvas, 1,048,576 preview/export pixels, 256 frames,
-  128 layers **including nested groups/children**, 32 open
-  documents, and 32 MiB of image working data / input file size.
+- At most a 1024×1024 canvas, 1,048,576 preview/export pixels per image, 256 source
+  frames, 128 tags, 256 palette keyframes, 128 layers **including nested
+  groups/children**, 32 open documents, and 32 MiB of image working data / input
+  file size. Animated export has a separate 8,388,608-total-pixel/32-MiB budget.
 - Pixel batches: 1–16,384 pixels, transparent **RGBA image layers only**.
   Background/locked layers and linked cels are refused. Colors replace pixels,
   duplicates use the last supplied color, and selection masks are not applied.
-- Palette/tag creation and editing, brush engines, cross-group reparenting,
-  packed/trimmed sprite sheets, and animated GIF/APNG export are not exposed yet.
-  Multi-frame native `.ase` files and full-canvas PNG sheets are supported.
+- Palette index remapping, color-mode conversion, brush engines, cross-group
+  reparenting, packed/trimmed sprite sheets, animated-asset browsing, and APNG
+  editing/round-trip are not exposed yet. Native `.ase`, full-canvas PNG sheets,
+  GIF, and lossless RGBA APNG exports are supported.
 - The pinned editor's legacy bulk group UI and crash-recovery paths are not fully
   implemented/validated. Use the guarded MCP layer/frame operations for grouped
   structural edits, select an image child for manual drawing, and save native
@@ -405,6 +553,13 @@ Linked-cel and background restrictions have explicit regression cases too.
 detached asset loading, pixel-exact sheet tiles and padding, native ghost
 colors/opacity/layer filtering/clipping, PNG/sheet publication, and unchanged
 selection/revision/saved state/history across read-only operations and exports.
+`scripts/bridge_metadata_cases.py` covers sparse palette keys and removal,
+repeated undo/redo, indexed/hidden-group index safety, tag IDs/properties/limits,
+GIF alpha/quantized timing, and APNG full-canvas pixels/chunks/delays/order/loops.
+`scripts/animation_checks.py` decodes exported animations independently of
+LibreSprite. The Python suite also compiles the GUI-independent APNG assembler
+with a C++17 compiler and zlib and tests malformed input, multi-IDAT PNGs,
+frame/duration/dimension limits, and the encoded-byte ceiling without a GUI.
 Do not interact with that test window while it runs. The tests do not establish
 cross-platform GUI correctness or unlimited hostile-input resilience.
 
@@ -425,8 +580,10 @@ frames using the new native tools. It verifies every frame and duration after
 saving/reopening `.ase`, and writes enlarged frame PNGs under the printed asset
 directory. It also exports a frame and sheet, compares sheet preview/export bytes,
 previews the saved asset without opening a tab, and writes an onion-skin PNG.
-The demo saves returned sheet metadata as its own separate JSON sidecar (not an
-atomic bundle). Agent editing is paused at the end; you can still use LibreSprite's
+It adds editable swatches and a native tag, exercises tag undo/redo, and exports
+looping GIF/APNG files plus separate demo-owned metadata JSON files. The demo
+saves returned metadata as its own separate sidecars (not an atomic bundle).
+Agent editing is paused at the end; you can still use LibreSprite's
 play button to preview the animation manually.
 
 ## Native implementation notes
@@ -452,6 +609,16 @@ lock without opening an undo transaction or marking the document saved. The
 shared PNG encoder uses nearest-neighbor sampling; sheet tiles include native
 compositing rather than copying raw cels. Asset previews never register their
 temporary documents or create persistent revision records.
+
+Palette and tag changes reuse native undo commands, not arbitrary scripting.
+`SetPalette` is used only at an exact keyframe; `AddPalette` handles inherited
+colors so earlier frames are not changed silently. Two upstream palette command
+fixes rewind the snapshot's input stream on add/redo and explicitly restore
+palette removal on undo rather than virtually redispatching removal again.
+GIF export uses a detached flattened sprite and explicit noninteractive GIF
+options; its native codec doesn't see or mutate the editor's document settings.
+The APNG assembler in `app/automation/apng.*` is GUI-independent and reuses native
+PNG image data rather than adding a separate image compression dependency.
 
 Two upstream fixes from the layer/frame milestone remain in this build:
 
@@ -480,6 +647,9 @@ tests, nine TypeScript/MCP tests, the baseline CLI smoke test, and the real GUI
 bridge test pass. The visible four-frame mushroom animation demonstration also
 passed end to end through MCP stdio, including grouped layers, independent cels,
 pixel-identical previews before undo/after redo, and exact frames/timing after a
-native save/reopen. The six new tools also pass the real MCP demo, including
+native save/reopen. Asset/preview/PNG tools also pass the real MCP demo, including
 byte-identical contact-sheet/export PNGs, detached thumbnails, and native onion
-previews while paused. Linux support is implemented but has not been tested here.
+previews while paused. Palette/tag/GIF/APNG tools pass expanded real-GUI and
+real-MCP tests; independent decoding of both animated demo exports confirms
+all four frames are pixel-exact with expected timing/looping. Linux support is
+implemented but has not been tested here.

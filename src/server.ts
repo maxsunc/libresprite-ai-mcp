@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.3.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.4.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -31,6 +31,8 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const color = z.object({ r: channel, g: channel, b: channel, a: channel });
   const scale = z.number().int().min(1).max(16).default(1);
   const sheet = { frames: z.array(frame).min(1).max(256).optional(), columns: z.number().int().min(1).max(16).optional(), scale, padding: z.number().int().min(0).max(16).default(0) };
+  const direction = z.enum(["forward", "reverse", "pingpong"]);
+  const tagColor = z.object({ r: channel, g: channel, b: channel, a: z.literal(255) });
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -139,6 +141,34 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { ...target, path: relativePath, ...sheet, overwrite: z.boolean().default(false) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("export_sprite_sheet", params));
+  server.registerTool("libresprite_set_palette", {
+    description: "Undoable frame-specific palette entries and/or resize (1-256 colors) for RGBA/indexed sprites. Entries are unique index+RGBA color pairs within final size. A changed inherited palette creates a keyframe at frame, affecting frames until the next keyframe, never earlier frames. RGBA swatches do NOT recolor RGBA pixels; indexed entries recolor indexed pixels without remapping. Shrink refuses any excluded transparent/pixel index, including hidden/off-canvas cels. Grayscale/future >256-entry palettes unsupported. Identical effective colors/size are a no-op, not a redundant keyframe. Requires active document/current revision/resumed bridge; does not change GUI frame selection. Multi-palette structural frame edits remain refused.",
+    inputSchema: { ...target, frame, size: z.number().int().min(1).max(256).optional(), entries: z.array(z.object({ index: z.number().int().min(0).max(255), color })).min(1).max(256).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("set_palette", params));
+  server.registerTool("libresprite_remove_palette", {
+    description: "Undoably remove an EXACT palette keyframe at frame>0, causing its interval to inherit the preceding palette. Frame-zero base palette cannot be removed. Indexed pixels are not remapped; refuse if any affected pixel/transparent index would be outside inherited palette size. Does not switch GUI frame. Requires active document/current revision/resumed bridge.",
+    inputSchema: { ...target, frame }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("remove_palette", params));
+  server.registerTool("libresprite_create_tag", {
+    description: "Create an undoable native animation tag with inclusive zero-based from/to range, name, direction (forward/reverse/pingpong; default forward), optional opaque RGBA label color (default black). Returns createdTagId; inspect returns tagId for all tags. At most128 tags; duplicate names/overlaps allowed, IDs disambiguate. No selection changes. Requires active document/current revision/resumed bridge.",
+    inputSchema: { ...target, name: z.string().min(1).max(120), from: frame, to: frame, direction: direction.default("forward"), color: tagColor.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("create_tag", params));
+  server.registerTool("libresprite_update_tag", {
+    description: "Atomically update any provided native tag name/from/to/direction/opaque label color in one undo step. At least one property required; final inclusive range must be valid. Identical values preserve revision/history. tagId belongs to this document/session (inspect again after reopen). No selection changes; active/current-revision/resumed guards apply.",
+    inputSchema: { ...target, tagId: documentId, name: z.string().min(1).max(120).optional(), from: frame.optional(), to: frame.optional(), direction: direction.optional(), color: tagColor.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("update_tag", params));
+  server.registerTool("libresprite_remove_tag", {
+    description: "Undoably delete one native animation tag by explicit tagId. Does not delete frames/pixels or change selection. Requires active document/current revision/resumed bridge; missing/stale tag IDs are refused.",
+    inputSchema: { ...target, tagId: documentId }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("remove_tag", params));
+  server.registerTool("libresprite_export_animation", {
+    description: "Atomically export GIF (.gif path) or lossless RGBA APNG (.apng path) inside asset root. Requires active document/current revision/resumed bridge; overwrite opt-in. Omit frames/tagId for all frames forward. frames is 1-256 ordered source indices (repeats allowed), OR tagId expands native forward/reverse/pingpong (endpoints not duplicated; <=510 steps). scale nearest-neighbor1-16, loop true=forever/false=once. Native GIF quantizes to <=256 colors/frame, alpha<128 transparent/otherwise opaque; duration floors to10ms units, <10ms refused. APNG preserves native rendered RGBA and1-65535ms durations (full-canvas SOURCE frames). Limits1,048,576 pixels/frame,8,388,608 total pixels,32MiB output. Returns ordered source/encoded timing metadata, not animated image content. No document/selection/preferences/history/saved-state changes; undo doesn't remove files; never blindly retry uncertain exports.",
+    inputSchema: { ...target, path: relativePath, format: z.enum(["gif", "apng"]), frames: z.array(frame).min(1).max(256).optional(), tagId: documentId.optional(), scale, loop: z.boolean().default(true), overwrite: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("export_animation", params));
   server.registerTool("libresprite_create", {
     description: "Create and visibly select a new transparent RGBA sprite with one layer/frame. Requires resumed bridge. Existing documents are left open; creation itself is not an undo step.",
     inputSchema: { width: z.number().int().min(1).max(1024), height: z.number().int().min(1).max(1024), name: z.string().min(1).max(120).default("AI Sprite") }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },

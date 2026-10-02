@@ -6,9 +6,9 @@ will let AI agents inspect, draw, and animate sprites in the visible application
 ## Current scope
 
 The reproducible native baseline and live bridge/MCP integration are implemented,
-including layer management, drawing primitives, animation previews, asset
-browsing, and PNG/sprite-sheet export. This is an early development integration,
-not yet a full artist workflow.
+including layer management, drawing primitives, palettes/tags, animation previews,
+asset browsing, and PNG/sprite-sheet/GIF/APNG export. This is an early development
+integration, not yet a full artist workflow.
 
 The baseline has been built on Apple Silicon and passes CLI, scripting,
 pixel-exact native-file round-trip, and sprite-sheet export smoke tests.
@@ -53,8 +53,9 @@ undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
 frames and timing, undo/redo, and native save.
 
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
-exports are also available. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **28 tools**, and limitations.
+exports are also available, along with undoable palette/tag editing and animated
+GIF/APNG export. See the
+[live bridge guide](docs/live-bridge.md) for setup, all **34 tools**, and limitations.
 
 ```sh
 npm test
@@ -63,7 +64,8 @@ python3 scripts/test-live-bridge.py
 
 The integration test launches its own disposable GUI instance. A visible MCP
 demo is available with `node scripts/demo-live.mjs` after both builds.
-Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo.
+Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo
+with editable swatches/tags and animated exports.
 Already-running editor windows must be restarted to pick up native updates.
 
 ## Source and licensing
