@@ -1,3 +1,5 @@
+// Modified by LibreSprite AI MCP contributors, 2026-10-01: group-safe layer handling.
+// Modification notice added 2026-10-08; original upstream notices below are retained.
 // Aseprite
 // Copyright (C) 2001-2016  David Capello
 //

@@ -1,5 +1,15 @@
 # Development milestones
 
+## Publication preparation — 2026-10-08
+
+- Adds the conventional root GPLv2 license, credits/third-party notice index,
+  and dated native-modification notices while retaining upstream licenses.
+- Documents source-alpha/platform limits, setup, safety, and development priorities.
+- Adds portable stdio/OpenCode V2 examples without publishing personal settings
+  or the working artwork collection.
+- Adds macOS/Linux CI for MCP and GUI-independent helper/metadata tests; full
+  native GUI and Linux validation remain separate work.
+
 ## 0.5.0 — Cel transforms and selection-based editing
 
 - 42 MCP tools: added atomic cel position/opacity, whole-image flips/exact

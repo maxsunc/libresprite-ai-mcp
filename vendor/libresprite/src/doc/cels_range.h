@@ -1,3 +1,5 @@
+// Modified by LibreSprite AI MCP contributors, 2026-10-01: nested-group cel traversal.
+// Modification notice added 2026-10-08; original upstream MIT notices below are retained.
 // Aseprite Document Library
 // Copyright (c) 2001-2015 David Capello
 //

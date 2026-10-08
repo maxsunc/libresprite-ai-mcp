@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Local MCP server for the enhanced LibreSprite live editor",
   "license": "GPL-2.0-only",
+  "repository": { "type": "git", "url": "git+https://github.com/maxsunc/libresprite-ai-mcp.git" },
+  "homepage": "https://github.com/maxsunc/libresprite-ai-mcp#readme",
+  "bugs": { "url": "https://github.com/maxsunc/libresprite-ai-mcp/issues" },
   "engines": { "node": ">=20" },
   "scripts": {
     "build": "tsc",

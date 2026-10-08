@@ -1,7 +1,13 @@
 # LibreSprite AI MCP
 
-A development home for an enhanced LibreSprite editor and an MCP server that
-will let AI agents inspect, draw, and animate sprites in the visible application.
+A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/LibreSprite)
+editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
+application**, with native undo and rendered PNG feedback.
+
+**Source alpha — v0.5.0.** This is an independent development project, not an
+official LibreSprite release. It requires building the custom editor; a stock
+LibreSprite installation does not contain this bridge. No prebuilt app bundle
+is currently provided.
 
 ## Current scope
 
@@ -11,8 +17,12 @@ palettes/tags, animation previews, asset browsing, and PNG/sprite-sheet/GIF/APNG
 export. This is an early development
 integration, not yet a full artist workflow.
 
-The baseline has been built on Apple Silicon and passes CLI, scripting,
-pixel-exact native-file round-trip, and sprite-sheet export smoke tests.
+The native editor and live integration have been verified on **Apple Silicon
+macOS**, including undo/redo, multi-frame animations, native-file round trips,
+and independently decoded exports. Linux transport is implemented but the full
+editor workflow has not been validated here. Windows transport is not implemented.
+CI checks the MCP server and GUI-independent helpers; it does not certify native
+GUI behavior on every platform.
 
 - `vendor/libresprite/`: pinned LibreSprite source, including its dependency submodules.
 - `vendor/libresprite.upstream.json`: upstream revision and dependency provenance.
@@ -20,6 +30,7 @@ pixel-exact native-file round-trip, and sprite-sheet export smoke tests.
 - `src/`: TypeScript MCP stdio server and serialized native-bridge client.
 - `docs/live-bridge.md`: tools, connection workflow, safety, and current limits.
 - `docs/building.md`: prerequisites and baseline verification steps.
+- `examples/mcp/`: portable client configuration templates.
 - `build/`: ignored local build outputs.
 
 The baseline is the upstream `v1.2` tag at
@@ -27,10 +38,20 @@ The baseline is the upstream `v1.2` tag at
 
 ## Build and run
 
-After installing the prerequisites in [the build guide](docs/building.md):
+You need Node.js 20+, Python 3, a C++ compiler, and the native dependencies in
+[the macOS build guide](docs/building.md). Start from a checkout:
 
 ```sh
+git clone https://github.com/maxsunc/libresprite-ai-mcp.git
+cd libresprite-ai-mcp
+npm ci
+npm run build
 bash scripts/build-libresprite.sh
+```
+
+To run the editor without agent access:
+
+```sh
 bash scripts/run-libresprite.sh
 ```
 
@@ -39,15 +60,19 @@ They operate on the local development build.
 
 ## Live MCP integration
 
-```sh
-npm ci
-npm run build
-```
-
-Configure your MCP client to run `node /absolute/path/to/dist/index.js`.
+Configure your MCP client to run
+`node /absolute/path/to/libresprite-ai-mcp/dist/index.js`; merge one of the
+[generic stdio or OpenCode V2 templates](examples/mcp/README.md) into your existing
+settings and replace the placeholder path.
 Use `libresprite_launch`, then `libresprite_connect`, then explicitly resume
 with `libresprite_set_paused` before editing. A normal editor launched without
 automation flags remains disconnected from agents.
+
+The default asset root is the checkout's ignored `assets/` directory. Start with
+copies of artwork, not your only originals. The server may be configured with
+`LIBRESPRITE_ASSET_ROOT`, `LIBRESPRITE_SOCKET`, and `LIBRESPRITE_EXECUTABLE`; see
+the live guide for details. Your client/model needs to support MCP image results
+to see previews.
 
 Available now: document creation/opening, inspection, rendered PNG feedback,
 undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
@@ -62,6 +87,8 @@ GIF/APNG export. See the
 
 ```sh
 npm test
+python3 -m unittest discover -s tests -v
+python3 scripts/smoke-test-libresprite.py
 python3 scripts/test-live-bridge.py
 ```
 
@@ -69,18 +96,56 @@ The integration test launches its own disposable GUI instance. A visible MCP
 demo is available with `node scripts/demo-live.mjs` after both builds.
 Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo
 with cel transforms, selection copy/fill feedback, editable swatches/tags, and animated exports.
-Already-running editor windows must be restarted to pick up native updates.
+Native updates require a newly launched editor. Save existing work first; the
+tools never automatically close or kill a window that might hold unsaved work.
+
+## Editing safeguards and limits
+
+- Agent editing starts paused and pauses on disconnect; explicitly resume before
+  mutations and pause before manual work.
+- Writes require the active document and its current revision. After a timeout
+  or uncertain result, reconnect and inspect rather than blindly retrying.
+- Native edits are undoable. Saves/exports publish atomically with overwrite
+  refused unless explicitly requested.
+- File access stays inside the configured asset root. The bridge is a local
+  private Unix socket, not a public network service.
+- Current bounds include 1024×1024 canvases, 256 frames, and 128 layers. Some
+  operations are RGBA-only; GIF quantizes color/alpha and delay, while APNG
+  preserves rendered RGBA and millisecond timing.
+
+These safeguards are not a hostile-input sandbox or a replacement for backups.
+Read [the exact operation semantics and limits](docs/live-bridge.md) before
+editing important artwork.
+
+## Next priorities
+
+1. Easier installation and reproducible Apple Silicon application packaging.
+2. Visible agent connection/status and pause controls inside the editor.
+3. Safe document switching, cel copy/paste, and guarded multi-frame workflows.
+4. Automated native builds/regressions and validated Linux support.
+
+See [the development milestones](CHANGELOG.md) for what is already implemented.
+Bug reports and focused contributions are welcome through the
+[GitHub issues](https://github.com/maxsunc/libresprite-ai-mcp/issues).
+Include the bridge version, platform, reproduction steps, and errors, and omit
+private artwork, local paths, and credentials. Use a disposable sprite for tests.
 
 ## Source and licensing
 
-LibreSprite is upstream at <https://github.com/LibreSprite/LibreSprite> and is
-distributed under GPLv2. Its license is preserved at
-[`vendor/libresprite/LICENSE.txt`](vendor/libresprite/LICENSE.txt). Individual
-libraries retain their own license files and notices; the root license does not
-replace those notices. This project is not an official LibreSprite release.
+Project-authored integration code is **GPL-2.0-only**, with the full text in
+[`LICENSE`](LICENSE). LibreSprite and its libraries retain their upstream
+copyright and license notices. See [credits and third-party notices](CREDITS.md),
+[our native modifications](docs/native-changes.md), and
+[the licensing overview](LICENSE.md). Distributing modified editor binaries
+requires corresponding source/build information and applicable dependency
+notices; giving credit alone is not sufficient.
+
+The working artwork, runtime files, build outputs, and personal client
+configuration are not included. Using this editor does not automatically
+GPL-license independently created artwork; assets need their own rights review.
 
 The imported source contains ordinary files, not a nested Git repository or an
-application-level Git submodule. Once this repository is committed and cloned,
+application-level Git submodule. After cloning this repository,
 no upstream submodule initialization is required to build it. The retained
 upstream `.gitmodules` file is informational.
 
@@ -89,4 +154,5 @@ against a pinned upstream checkout in the ignored `.cache/` directory. That
 command downloads the checkout if necessary and intentionally reports future
 native changes as differences. The importer refuses to overwrite existing source.
 The baseline and native bridge changes are separate commits. Project-authored
-integration code uses GPLv2; see [licensing](LICENSE.md).
+integration code uses GPLv2-only; existing upstream component licenses remain
+intact.

@@ -1,5 +1,11 @@
 # Building the LibreSprite baseline
 
+The build helper now produces the modified bridge-enabled development editor.
+The baseline results below describe the original import; later native changes
+are indexed in [native-changes.md](native-changes.md). Apple Silicon macOS is the
+verified native platform. Linux transport exists but the full build/editing
+workflow is not yet validated here; Windows bridge transport is deferred.
+
 ## Upstream snapshot
 
 Source lives at `vendor/libresprite/` and is pinned to LibreSprite `v1.2`, commit

@@ -28,7 +28,7 @@ not launch the editor. A generic stdio MCP client configuration looks like:
   "mcpServers": {
     "libresprite": {
       "command": "node",
-      "args": ["/Users/maxsuncanada/github/libresprite-ai-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/libresprite-ai-mcp/dist/index.js"]
     }
   }
 }
@@ -37,6 +37,10 @@ not launch the editor. A generic stdio MCP client configuration looks like:
 The config shape and location depend on your MCP client. Use absolute paths so
 its working directory does not matter. Tool results include real PNG image
 content; your AI client/model must support MCP image results to see them.
+Replace the placeholder path with your checkout's actual absolute path. See
+[`examples/mcp/`](../examples/mcp/README.md) for generic stdio and OpenCode V2
+templates. Merge the relevant entry into existing client settings; do not
+replace unrelated settings. Personal client configuration stays untracked.
 
 ### Environment settings
 
@@ -800,7 +804,7 @@ and its license under `vendor/`.
 
 ### Verified milestone
 
-On the development Apple Silicon Mac, the native build, eleven Python helper
+On the development Apple Silicon Mac, the native build, fourteen Python helper/metadata
 tests, nine TypeScript/MCP tests, the baseline CLI smoke test, and the real GUI
 bridge test pass. The visible four-frame mushroom animation demonstration also
 passed end to end through MCP stdio, including grouped layers, independent cels,

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "libresprite": {
+      "command": "node",
+      "args": ["/absolute/path/to/libresprite-ai-mcp/dist/index.js"]
+    }
+  }
+}

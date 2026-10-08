@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "libresprite": {
+        "type": "local",
+        "command": ["node", "/absolute/path/to/libresprite-ai-mcp/dist/index.js"]
+      }
+    }
+  }
+}

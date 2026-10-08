@@ -1,4 +1,5 @@
-// LibreSprite AI integration. Distributed under GNU GPL version 2.
+// LibreSprite AI MCP: created 2026-10-01; license notice clarified 2026-10-08.
+// Distributed under GNU GPL version 2 only (GPL-2.0-only); see the root LICENSE.
 #include "app/automation/apng.h"
 
 #include <algorithm>

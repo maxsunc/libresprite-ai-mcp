@@ -6,7 +6,7 @@
 /dist/
 *.gch
 
-# Future MCP server dependencies.
+# MCP server dependencies.
 /node_modules/
 
 # Python helper caches.
@@ -16,6 +16,13 @@ __pycache__/
 # Local sockets and agent-owned runtime files.
 /.runtime/
 /assets/
+
+# Personal client configuration and credentials; tracked examples live elsewhere.
+/opencode.json
+/opencode.jsonc
+/.env
+/.env.*
+!/.env.example
 
 # macOS filesystem metadata.
 .DS_Store
