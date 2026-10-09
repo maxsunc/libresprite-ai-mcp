@@ -127,6 +127,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_set_indexed_pixels` | Exact palette-index painting/erasure without conversion |
 | `libresprite_inspect` | Layers/cels, frames/durations, palettes, tags, revision |
 | `libresprite_render` | Composite a frame to PNG image content |
+| `libresprite_render_frame_diff` | Exact visual frame differences with counts/bounds |
 | `libresprite_list_assets` | Browse supported assets/directories inside the root |
 | `libresprite_preview_asset` | Render a file thumbnail without opening a GUI tab |
 | `libresprite_contact_sheet` | Read-only tiled animation preview with frame rectangles |
@@ -163,7 +164,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **59 tools** in server/bridge version **0.8.0**. Rebuild the editor
+There are **60 tools** in server/bridge version **0.10.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -228,6 +229,9 @@ It returns `closedDocumentId`, `lastRevision`, and the newly selected
 After an uncertain response list documents instead of blindly retrying.
 
 ## Atomic animation workflows (v0.7.0)
+
+For read-only frame differences and their exact measurement semantics, see
+[animation inspection](animation-inspection.md).
 
 The following operations require a resumed bridge, the active sprite/current
 revision, and idle GUI/target views. Frame arrays use explicit **zero-based**

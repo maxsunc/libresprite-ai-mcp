@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.9.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.10.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -136,6 +136,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     description: "Return an actual composited PNG image plus metadata for a zero-based frame. Nearest-neighbor scale preserves pixel edges. At most 1,048,576 output pixels. Includes revision; no file is written.",
     inputSchema: { documentId, frame, scale: z.number().int().min(1).max(16).default(1) }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("render", params));
+  server.registerTool("libresprite_render_frame_diff", {
+    description: "Read-only exact visual difference between two zero-based frames. Returns a transparent PNG with added pixels green, removed red, and modified color/alpha yellow; unchanged pixels transparent. Compares native rendered RGBA, including palette/blend/opacity effects, not raw cel bytes. Both alpha-zero pixels are equivalent regardless of RGB. Reports unscaled in-canvas counts, changed fraction/bounds, and before/after nonzero-alpha bounds/occupancy centroids (not tracked landmarks). No tolerance, off-canvas analysis, files, GUI selection, preferences, saved-state or undo changes. Works paused/inactive; finish GUI drawing/playback first. Nearest-neighbor scale1-16; max1,048,576 output pixels. Includes current revision/session.",
+    inputSchema: { documentId, fromFrame: frame, toFrame: frame, scale },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => call("render_frame_diff", params));
   server.registerTool("libresprite_list_assets", {
     description: "Browse one directory inside the connected editor's asset root without opening documents. Returns directories and PNG/.ase/.aseprite files, directories first then bytewise name order, with root-relative paths and file sizes. Nonrecursive; symlinks/special files/other formats are skipped. Offset pagination (1-100 per page); directories above 4096 total entries are refused. Available while paused; directory changes may shift offsets.",
     inputSchema: { path: relativePath.default("."), offset: z.number().int().min(0).max(4096).default(0), limit: z.number().int().min(1).max(100).default(50) },

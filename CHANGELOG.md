@@ -1,5 +1,16 @@
 # Development milestones
 
+## 0.10.0 — Read-only animation inspection (2026-10-09)
+
+- Frame differences: native rendered RGBA comparison with a green/red/yellow
+  added/removed/modified PNG, exact unscaled counts/bounds, and occupancy centroids.
+  Fully transparent RGB payloads are ignored; palette/blend/opacity changes are
+  included. Paused/inactive reads preserve selection, preferences, files and history.
+- Native measurement unit tests, independent PNG comparisons and focused disposable
+  GUI regressions. Animation correction and native-CI/Linux work remain out of scope.
+- The approved local v0.9.0 package remains unchanged; new native features require
+  a rebuilt editor/new development window and refreshed MCP server/catalog.
+
 ## 0.9.0 — Apple Silicon review packaging (2026-10-08)
 
 - Repeatable local `.app`/ZIP builder with bundled resources and recursive native

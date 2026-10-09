@@ -29,7 +29,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       let result: Record<string, unknown> = { ok: true };
       if (request.method === "status") result = { protocolVersion: 1, sessionId: "session", paused: true };
       else assert.equal(request.params.sessionId, "session");
-      if (["render", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(request.method)) {
+      if (["render", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff"].includes(request.method)) {
         assert.equal(request.params.scale, 1);
         result = { revision: 2, pngBase64: "iVBORw0KGgo=", frame: 0 };
       }
@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 59);
+    assert.equal(tools.length, 60);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -92,6 +92,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["preview_asset", { path: "art.ase" }],
       ["contact_sheet", { documentId: 1, frames: [2, 0], columns: 2 }],
       ["render_onion_skin", { documentId: 1, frame: 0, layerId: 1 }],
+      ["render_frame_diff", { documentId: 1, fromFrame: 0, toFrame: 1 }],
       ["export_png", { ...target, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", frames: [2, 0], columns: 2 }],
       ["set_palette", { ...target, frame: 0, size: 2, entries: [{ index: 1, color: paint.color }] }],
@@ -122,10 +123,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
       assert.equal(result.isError, undefined, method);
       assert.equal(methods.at(-1), method);
-      const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(method);
+      const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
@@ -191,6 +192,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["preview_asset", { path: "art.png", frame: 256 }],
       ["contact_sheet", { documentId: 1, frames: [] }],
       ["render_onion_skin", { documentId: 1, frame: 0, previous: 9 }],
+      ["render_frame_diff", { documentId: 1, fromFrame: 0 }],
+      ["render_frame_diff", { documentId: 1, fromFrame: 0, toFrame: 256 }],
+      ["render_frame_diff", { documentId: 1, fromFrame: 0, toFrame: 1, scale: 17 }],
       ["export_png", { documentId: 1, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", columns: 17 }],
       ["set_palette", { ...target, frame: 0, size: 257 }],

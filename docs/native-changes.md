@@ -108,3 +108,10 @@ stock/development LibreSprite. Unbundled native builds retain upstream paths;
 there is no new editor command or change to sprite/Undo semantics.
 `src/app/automation/bridge.cpp` reports bridge v0.9.0; the native tool set remains
 unchanged. Packaging and path-mapping build flags live in project-owned scripts.
+
+## 2026-10-09 — v0.10.0 animation inspection
+
+`src/app/automation/bridge.cpp` adds read-only native rendered frame differences.
+New GPL-2.0-only `src/app/automation/animation_analysis.h` measures nonzero-alpha
+occupancy, bounds/centroids and exact visual change categories, with standalone
+unit tests. It does not mutate documents or change the upstream renderer.

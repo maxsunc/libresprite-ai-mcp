@@ -28,7 +28,7 @@ export async function diagnose(options: ServerOptions, connect = false): Promise
   try {
     const manifest = JSON.parse(await readFile(path.join(resources, "package-manifest.json"), "utf8")) as { version: string; minimumMacOS: string };
     await access(path.join(resources, "data/gui.xml"));
-    add("resources", manifest.version === "0.9.0" ? "ok" : "error", `Package ${manifest.version}; macOS ${manifest.minimumMacOS}+; ${resources}`);
+    add("resources", manifest.version === "0.10.0" ? "ok" : "error", `Package ${manifest.version}; macOS ${manifest.minimumMacOS}+; ${resources}`);
     if (process.platform === "darwin") {
       const { stdout } = await exec("/usr/bin/sw_vers", ["-productVersion"]);
       const actual = stdout.trim().split(".").map(Number), needed = manifest.minimumMacOS.split(".").map(Number);
@@ -81,7 +81,7 @@ export async function diagnose(options: ServerOptions, connect = false): Promise
     const bridge = new BridgeClient(options.socketPath, 3000);
     try {
       const status = await bridge.request("status");
-      add("bridge", status.bridgeVersion === "0.9.0" ? "ok" : "error", JSON.stringify(status));
+      add("bridge", status.bridgeVersion === "0.10.0" ? "ok" : "error", JSON.stringify(status));
     } catch (error) { add("bridge", "error", String(error)); }
     finally { bridge.close(); }
     add("disconnect", "warning", "Explicit diagnostic connection closed: the editor pauses on disconnect. It was never resumed or edited.");

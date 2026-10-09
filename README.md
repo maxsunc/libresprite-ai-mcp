@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.9.0.** This is an independent development project, not an
+**Source alpha — v0.10.0.** This is an independent development project, not an
 official LibreSprite release. A stock LibreSprite installation does not contain
 this bridge. A relocatable Apple Silicon review-package builder is now provided;
 downloadable signed/notarized releases are not published yet.
@@ -114,7 +114,12 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **59 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **60 tools**, and limitations.
+
+Read-only frame differences now highlight added/removed/modified rendered pixels
+and report exact counts, bounds, and occupancy centroids. See
+[animation inspection](docs/animation-inspection.md). The approved v0.9.0 package
+has not been rebuilt; these source features require a new development editor.
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.

@@ -3,11 +3,13 @@
 // Updated 2026-10-08: visible user controls and guarded document/site navigation.
 // Updated 2026-10-08: independent cel copies and atomic animation-range editing.
 // Updated 2026-10-08: guarded canvas/layer operations, masks, brushes/index painting.
+// Updated 2026-10-09: read-only rendered frame differences and motion measurements.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
 #include "app/automation/apng.h"
+#include "app/automation/animation_analysis.h"
 #include "app/automation/reorder_frames.h"
 #include "app/automation/reparent_layer.h"
 #include "app/automation/revision_metadata.h"
@@ -654,6 +656,28 @@ private:
     auto result = inspect(document);
     addPng(result, encodePng(composite(sprite, frame).get(), scale));
     result["frame"] = frame; result["scale"] = scale;
+    return result;
+  }
+  Json renderFrameDiff(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    int from = integer(params, "fromFrame", 0, sprite->lastFrame());
+    int to = integer(params, "toFrame", 0, sprite->lastFrame());
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels,
+            "LIMIT_EXCEEDED", "Difference preview exceeds 1,048,576 output pixels. Use a smaller scale.");
+    auto result = previewMetadata(document);
+    auto before = composite(sprite, from), after = composite(sprite, to);
+    ImageRef image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+    automation::FrameDifference difference;
+    for (int y = 0; y < sprite->height(); ++y)
+      for (int x = 0; x < sprite->width(); ++x)
+        image->putPixel(x, y, difference.add(x, y, before->getPixel(x, y), after->getPixel(x, y)));
+    result["schema"] = "libresprite-frame-diff-v1";
+    result["fromFrame"] = from; result["toFrame"] = to; result["scale"] = scale;
+    result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
+    result["difference"] = difference.json();
+    result["legend"] = {{"added", {40, 200, 90, 255}}, {"removed", {240, 70, 70, 255}}, {"modified", {255, 200, 40, 255}}};
+    addPng(result, encodePng(image.get(), scale));
     return result;
   }
   Json renderOnionSkin(Document* document, const Json& params) {
@@ -2017,9 +2041,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas", "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection", "set_bitmap_selection"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas", "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection", "set_bitmap_selection", "render_frame_diff"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.9.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.10.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -2042,7 +2066,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -2072,6 +2096,7 @@ private:
       if (method == "contact_sheet") return contactSheet(document, params);
       if (method == "render_onion_skin") return renderOnionSkin(document, params);
       if (method == "render_selection") return renderSelection(document, params);
+      if (method == "render_frame_diff") return renderFrameDiff(document, params);
       return renderFrame(document, params);
     }
     if (method == "activate_document") return activateDocument(document, params);
