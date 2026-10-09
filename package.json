@@ -1,6 +1,6 @@
 {
   "name": "libresprite-ai-mcp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Local MCP server for the enhanced LibreSprite live editor",
@@ -14,7 +14,9 @@
     "start": "node dist/index.js",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "test:native": "python3 scripts/smoke-test-libresprite.py",
-    "test:bridge": "python3 scripts/test-live-bridge.py"
+    "test:bridge": "python3 scripts/test-live-bridge.py",
+    "doctor": "node dist/index.js --doctor",
+    "package:macos": "python3 scripts/package-macos.py"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",

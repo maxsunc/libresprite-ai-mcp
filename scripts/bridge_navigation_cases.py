@@ -1,5 +1,6 @@
 """Guarded document closing/switching and non-editing site focus. GPLv2-only."""
 import base64
+from bridge_animation_cases import canonical_inspection
 import uuid
 
 
@@ -10,7 +11,7 @@ def test_navigation(client, assets, smoke):
     ink = first["layers"][0]["layerId"]
 
     def inspect(doc):
-        return client.request("inspect", {"documentId": doc})
+        return canonical_inspection(client.request("inspect", {"documentId": doc}))
 
     def target(doc):
         return {"documentId": doc, "expectedRevision": inspect(doc)["revision"]}
@@ -19,7 +20,7 @@ def test_navigation(client, assets, smoke):
         return client.request("list_documents")["activeDocumentId"]
 
     def switch(doc, **extra):
-        return client.request("activate_document", {**target(doc), "expectedActiveDocumentId": active(), **extra})
+        return canonical_inspection(client.request("activate_document", {**target(doc), "expectedActiveDocumentId": active(), **extra}))
 
     def pixels(doc):
         result = []

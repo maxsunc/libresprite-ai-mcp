@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.8.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.9.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -70,6 +70,7 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     try {
       if (launched && launched.exitCode === null && launched.signalCode === null) throw new BridgeError("ALREADY_LAUNCHED", "An editor was already launched by this server. Connect to it instead.");
       if (process.platform !== "darwin" && process.platform !== "linux") throw new BridgeError("UNSUPPORTED_PLATFORM", "The first live bridge supports macOS/Linux.");
+      if (Buffer.byteLength(options.socketPath) > (process.platform === "darwin" ? 103 : 107)) throw new BridgeError("INVALID_SOCKET", "Socket path is too long. Use a short private directory; run --doctor for diagnostics.");
       const directory = path.dirname(options.socketPath);
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const info = await lstat(directory);

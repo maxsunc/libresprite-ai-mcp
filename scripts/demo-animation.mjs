@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-animation-review", version: "0.8.0" });
+const client = new Client({ name: "libresprite-animation-review", version: "0.9.0" });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let stopping = false;
 process.once("SIGINT", () => { stopping = true; });

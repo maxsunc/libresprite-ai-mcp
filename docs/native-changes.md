@@ -97,3 +97,14 @@ objects. A destination allocation happens before detaching from the source;
 undo/redo resolve IDs after later folder deletion/restoration. These new files
 are GPL-2.0-only. `src/app/CMakeLists.txt` builds this command. No upstream
 document-model or ordinary-editor command behavior is changed for this milestone.
+
+## 2026-10-08 — v0.9.0 packaging isolation
+
+`src/base/fs_osx.mm` and `src/base/fs.h` add a small macOS bundle-identifier
+query (retaining their MIT licensing). `src/app/resource_finder.cpp` uses a
+separate user-data directory only for `io.github.maxsunc.libresprite-ai-mcp`.
+This isolates packaged preferences, palettes, user resources, and recovery from
+stock/development LibreSprite. Unbundled native builds retain upstream paths;
+there is no new editor command or change to sprite/Undo semantics.
+`src/app/automation/bridge.cpp` reports bridge v0.9.0; the native tool set remains
+unchanged. Packaging and path-mapping build flags live in project-owned scripts.

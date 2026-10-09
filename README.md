@@ -4,10 +4,10 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.8.0.** This is an independent development project, not an
-official LibreSprite release. It requires building the custom editor; a stock
-LibreSprite installation does not contain this bridge. No prebuilt app bundle
-is currently provided.
+**Source alpha — v0.9.0.** This is an independent development project, not an
+official LibreSprite release. A stock LibreSprite installation does not contain
+this bridge. A relocatable Apple Silicon review-package builder is now provided;
+downloadable signed/notarized releases are not published yet.
 
 ## Current scope
 
@@ -74,6 +74,30 @@ copies of artwork, not your only originals. The server may be configured with
 the live guide for details. Your client/model needs to support MCP image results
 to see previews.
 
+## Apple Silicon review package
+
+After installing the [build prerequisites](docs/building.md) and `npm ci`, run:
+
+```sh
+npm run package:macos
+```
+
+This rebuilds current source and creates a new folder and ZIP under
+`build/packages/`, with **LibreSprite AI.app**, bundled native libraries/resources,
+a production MCP folder, setup diagnostics, checksums, notices, and corresponding
+project/FreeType/LZ4 source. It never installs or replaces an app, changes client
+configuration, or includes private artwork. Existing output is refused.
+
+The package runs outside the checkout **without Homebrew**; MCP needs external
+Node.js 20+. Keep the folder together, run `bash /path/to/package/mcp/doctor.sh`,
+and configure the client to run `bash /path/to/package/mcp/start-mcp.sh`.
+The app has isolated preferences/recovery storage. Package minimum macOS is
+computed from all bundled libraries (the current local build requires **26.0+**).
+It is ad-hoc signed, **not Developer ID signed or notarized**.
+See [packaging/setup](docs/packaging.md) and [the review checklist](docs/testing-v0.9.md).
+
+## Editing features and tests
+
 Available now: document creation/opening, inspection, rendered PNG feedback,
 undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
 frames and timing, undo/redo, and native save.
@@ -132,19 +156,22 @@ These safeguards are not a hostile-input sandbox or a replacement for backups.
 Read [the exact operation semantics and limits](docs/live-bridge.md) before
 editing important artwork.
 
-## Next priorities
+## Review status and release limits
 
-1. Easier installation, setup diagnostics, and reproducible Apple Silicon
-   application packaging.
-2. Automated native builds/regressions and validated Linux support.
+The v0.9.0 Apple Silicon package was user-tested and approved on 2026-10-09.
+Downloadable binary releases and Developer ID signing/notarization remain separate
+decisions; no binary release has been published.
+The separate native-CI/Linux milestone was skipped at the user's request;
+Linux full-editor validation and Windows transport remain outside this milestone.
 
 The v0.6.0 user-control, v0.7.0 animation, and v0.8.0 editing milestones were
 reviewed and approved. Run
 `node scripts/demo-editing.mjs` for a separate editor with generated RGBA/indexed
 sprites and saved before/after crop files. One native Undo restores the canvas,
 discarded pixels on all frames/layers, and selection together. See
-[the step 3 test checklist](docs/testing-v0.8.md). Packaging is the next milestone;
-stop again for user testing before moving on to platform work. The earlier
+[the step 3 test checklist](docs/testing-v0.8.md). The approved packaging milestone
+has its own [review checklist](docs/testing-v0.9.md); no platform milestone is
+planned. The earlier
 [step 1](docs/testing-v0.6.md) and
 [step 2](docs/testing-v0.7.md) checklists and demos remain available.
 

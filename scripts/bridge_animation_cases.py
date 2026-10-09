@@ -1,8 +1,25 @@
 """Step 2: real GUI atomic cel/frame/selection workflows. GPL-2.0-only."""
 import base64
+import copy
 import struct
 import uuid
 import zlib
+
+
+def canonical_inspection(state):
+    """Only recovery's initial 0->1 counters are equivalent, like native revisions.
+
+    Keep all higher counters, identities, properties, history, and revision;
+    never mutate the raw inspection returned by the editor.
+    """
+    state = copy.deepcopy(state)
+    for layer in state.get("layers", []):
+        if layer.get("version") == 0:
+            layer["version"] = 1
+        for cel in layer.get("cels", []):
+            if cel.get("imageVersion") == 0:
+                cel["imageVersion"] = 1
+    return state
 
 
 def fixture(path, linked=False, background=False, mode=32, palettes=False, count=3):
@@ -95,7 +112,7 @@ def test_animation_workflows(client, assets, smoke):
     blue = {"r": 40, "g": 150, "b": 210, "a": 128}
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def target():
         return {"documentId": document_id, "expectedRevision": current()["revision"]}
@@ -119,7 +136,7 @@ def test_animation_workflows(client, assets, smoke):
         response = client.request(method, {**target(), **(params or {})}, expected_error=error)
         if error:
             after, after_pixels = current(), images()
-            assert after == before, (method, error, {key: (before.get(key), after.get(key)) for key in after if after.get(key) != before.get(key)})
+            assert canonical_inspection(after) == canonical_inspection(before), (method, error, {key: (before.get(key), after.get(key)) for key in after if after.get(key) != before.get(key)})
             assert after_pixels == pixels, (method, error, [i for i, (a, b) in enumerate(zip(pixels, after_pixels)) if a != b])
         return response
 

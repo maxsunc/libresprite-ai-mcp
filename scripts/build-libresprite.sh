@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${LIBRESPRITE_BUILD_DIR:-$ROOT/build/libresprite}"
+# CMake compiler flags are shell-parsed; escape checkouts with spaces/special chars.
+printf -v prefix_map '%q' "-ffile-prefix-map=$ROOT=."
 
 for tool in cmake ninja; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -18,6 +20,8 @@ options=(
   "-DCMAKE_BUILD_TYPE=${LIBRESPRITE_BUILD_TYPE:-RelWithDebInfo}"
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
   -DCMAKE_DISABLE_FIND_PACKAGE_V8=ON
+  "-DCMAKE_C_FLAGS=$prefix_map"
+  "-DCMAKE_CXX_FLAGS=$prefix_map"
 )
 
 if [[ "$(uname -s)" == Darwin ]]; then

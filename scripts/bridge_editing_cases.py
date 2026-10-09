@@ -2,7 +2,7 @@
 import base64
 import copy
 import struct
-from bridge_animation_cases import fixture, large_fixture, raw_frames
+from bridge_animation_cases import canonical_inspection, fixture, large_fixture, raw_frames
 
 
 def test_editing_workflows(client, assets, smoke):
@@ -16,7 +16,7 @@ def test_editing_workflows(client, assets, smoke):
     blue = {"r": 30, "g": 150, "b": 210, "a": 128}
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def target():
         return {"documentId": document_id, "expectedRevision": current()["revision"]}

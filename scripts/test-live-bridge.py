@@ -72,7 +72,7 @@ def main():
         with log_path.open("w") as log:
             environment = os.environ.copy()
             environment.pop("SDL_VIDEODRIVER", None)
-            process = subprocess.Popen([str(BUILD / "bin/libresprite"), "--automation-socket", str(endpoint), "--automation-root", str(assets)], stdout=log, stderr=log, env=environment)
+            process = subprocess.Popen([str(SMOKE.EXECUTABLE), "--automation-socket", str(endpoint), "--automation-root", str(assets)], stdout=log, stderr=log, env=environment)
             client = None
             try:
                 deadline = time.monotonic() + 20
@@ -84,7 +84,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.8.0" and "draw_brush_stroke" in status["methods"]
+                assert status["bridgeVersion"] == "0.9.0" and "draw_brush_stroke" in status["methods"]
                 assert status["connected"] and not status["pausedByUser"] and status["controlText"] == "AI: Paused | Resume"
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")

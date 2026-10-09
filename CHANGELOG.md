@@ -1,5 +1,28 @@
 # Development milestones
 
+## 0.9.0 — Apple Silicon review packaging (2026-10-08)
+
+- Repeatable local `.app`/ZIP builder with bundled resources and recursive native
+  libraries, explicit runtime SDL3, rewritten loader paths, debug stripping,
+  ad-hoc signatures, and computed minimum macOS version. Never installs/replaces
+  apps, closes editors, or overwrites existing packages.
+- Production-only packaged MCP folder and launcher; Node.js 20+ remains external.
+  Relocatable defaults put artwork/runtime files outside the signed application.
+- Read-only setup diagnostics (`--doctor`); optional explicit `--connect` checks
+  live bridge version and pauses on disconnect. No additional MCP tools.
+- Separately identified app with isolated preferences/recovery storage and no
+  automatic file associations. Source development preference paths unchanged.
+- Integrity manifests/ZIP checksum, full project/upstream/dependency notices,
+  exact allowlisted source snapshot, installed build recipes, matching
+  FreeType/LZ4 source and full licenses (FreeType uses GPLv2). No private
+  artwork/configuration.
+- Packaging was user-tested and approved on 2026-10-09. The package is still local,
+  ad-hoc signed, and not notarized or installed; no binary release was published.
+  The native-CI/Linux milestone was skipped at the user's request.
+- Fresh-profile GUI comparisons now use the existing native recovery-counter
+  canonicalization (only layer/image `0→1`), with a parity unit test; raw native
+  telemetry and editing behavior are unchanged.
+
 ## 0.8.0 — Canvas, layers, masks, and painting (2026-10-08)
 
 - 59 MCP tools: lossless canvas resize/shifts, explicit all-frame canvas crop,

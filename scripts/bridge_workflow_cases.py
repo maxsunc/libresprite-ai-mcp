@@ -1,5 +1,6 @@
 """Layer, frame, and drawing regression cases for the disposable native GUI test."""
 import base64
+from bridge_animation_cases import canonical_inspection
 import struct
 import zlib
 
@@ -10,7 +11,7 @@ def test_layers_frames_drawing(client, assets, smoke):
     base = document["layers"][0]["layerId"]
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def mutate(method, params=None, error=None):
         snapshot = current()

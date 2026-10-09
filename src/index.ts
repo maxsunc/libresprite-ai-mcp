@@ -2,13 +2,21 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
+import { resolveOptions } from "./config.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { server, close } = createServer({
-  socketPath: path.resolve(process.env.LIBRESPRITE_SOCKET ?? path.join(root, ".runtime/bridge.sock")),
-  executable: path.resolve(process.env.LIBRESPRITE_EXECUTABLE ?? path.join(root, "build/libresprite/bin/libresprite")),
-  assetRoot: path.resolve(process.env.LIBRESPRITE_ASSET_ROOT ?? path.join(root, "assets")),
-});
+const options = resolveOptions(root);
+const args = process.argv.slice(2);
+if (args.length && !(args[0] === "--doctor" && (args.length === 1 || (args.length === 2 && args[1] === "--connect")))) {
+  throw new Error("Usage: node dist/index.js [--doctor [--connect]]");
+}
+if (args[0] === "--doctor") {
+  const { diagnose } = await import("./doctor.js");
+  const result = await diagnose(options, process.argv.includes("--connect"));
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.ok ? 0 : 1);
+}
+const { server, close } = createServer(options);
 
 let closing = false;
 async function shutdown() {

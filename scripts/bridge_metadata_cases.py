@@ -1,5 +1,6 @@
 """Undoable palette/tag and native GIF/lossless APNG GUI regressions. GPLv2."""
 import base64
+from bridge_animation_cases import canonical_inspection
 import struct
 import zlib
 from animation_checks import read_apng, read_gif
@@ -16,7 +17,7 @@ def test_palettes_tags_animation(client, assets, smoke):
     blue = {"r": 60, "g": 100, "b": 220, "a": 255}
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def mutate(method, params=None, error=None):
         before = current()

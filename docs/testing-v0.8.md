@@ -3,8 +3,8 @@
 Steps 1, 2, and 3 were user-approved. This milestone adds canvas resize/crop,
 independent layer/group copies, reparenting/native blends, polygon/bitmap masks,
 custom bitmap brushes, and exact indexed-color painting. This checklist remains
-available for regression review. **Packaging is next and must stop for its own
-user testing before platform work proceeds.**
+available for regression review. **Packaging was also user-tested and approved
+on 2026-10-09; the separate native-CI/Linux milestone was skipped at user request.**
 
 ## Separate review editor
 

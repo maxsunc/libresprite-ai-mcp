@@ -1,5 +1,6 @@
 """Read-only browsing/animation previews and atomic export GUI regressions. GPLv2."""
 import base64
+from bridge_animation_cases import canonical_inspection
 import struct
 import zlib
 
@@ -15,7 +16,7 @@ def test_assets_previews_exports(client, assets, smoke):
     blue = {"r": 60, "g": 100, "b": 220, "a": 255}
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def mutate(method, params):
         return client.request(method, {"documentId": document_id, "expectedRevision": current()["revision"], **params})
@@ -152,7 +153,7 @@ def test_assets_previews_exports(client, assets, smoke):
     client.request("list_assets", {"path": "preview-assets/crowded"}, expected_error="LIMIT_EXCEEDED")
     after_documents, after = client.request("list_documents"), current()
     assert after_documents == documents, ("Documents changed during detached preview/browsing", documents, after_documents)
-    assert after == before, ("Sprite changed during detached preview/browsing", before, after)
+    assert canonical_inspection(after) == canonical_inspection(before), ("Sprite changed during detached preview/browsing", before, after)
     print("PASS: bounded root asset browsing/pagination, symlink filtering/escape guards, detached native/PNG thumbnails while paused.")
 
     target = {"documentId": document_id, "expectedRevision": before["revision"]}
@@ -209,5 +210,5 @@ def test_assets_previews_exports(client, assets, smoke):
     no_wrap = client.request("render_onion_skin", {"documentId": tagged_id, "frame": 0, "previous": 1, "next": 0, "position": "front"})
     regular = client.request("render", {"documentId": tagged_id, "frame": 0, "scale": 1})
     assert pixels(no_wrap) == pixels(regular)
-    assert client.request("inspect", {"documentId": tagged_id}) == tagged
+    assert canonical_inspection(client.request("inspect", {"documentId": tagged_id})) == canonical_inspection(tagged)
     print("PASS: atomic PNG/sheet exports, exact layout metadata, no overwrite/retry/state changes, session/revision/pause/active-document/path/pixel limits.")

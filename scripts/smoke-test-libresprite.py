@@ -12,7 +12,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = Path(os.environ.get("LIBRESPRITE_BUILD_DIR", ROOT / "build/libresprite"))
-EXECUTABLE = BUILD / "bin/libresprite"
+EXECUTABLE = Path(os.environ.get("LIBRESPRITE_EXECUTABLE", BUILD / "bin/libresprite"))
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 

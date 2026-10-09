@@ -176,10 +176,14 @@ void ResourceFinder::includeUserDir(const char* filename)
 
 #elif __APPLE__
 
-  // $HOME/Library/Application Support/LibreSprite/filename
+  // LibreSprite AI MCP: modified 2026-10-08. Only the separately identified
+  // packaged app uses its own preferences, recovery sessions, and user data.
+  const char* userPackage =
+    base::get_app_bundle_id() == "io.github.maxsunc.libresprite-ai-mcp"
+      ? "LibreSprite AI MCP" : PACKAGE;
   addPath(
     base::join_path(
-      base::join_path(base::get_lib_app_support_path(), PACKAGE),
+      base::join_path(base::get_lib_app_support_path(), userPackage),
       filename).c_str());
 
 #else

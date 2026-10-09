@@ -1,5 +1,6 @@
 """Native revision bookkeeping regression. GPL-2.0-only."""
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -74,3 +75,15 @@ int main() {
         metadata = {"layers": [{"layerId": 1, "version": 0}, {"layerId": 2, "version": 1, "cels": []}]}
         result = self.normalize(metadata)
         self.assertEqual([layer["version"] for layer in result["layers"]], [1, 1])
+
+    def test_gui_refusal_comparison_matches_native_canonicalization(self):
+        spec = importlib.util.spec_from_file_location("animation_cases", ROOT / "scripts/bridge_animation_cases.py")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        for layer_version, image_version in ((0, 0), (1, 1), (2, 0), (0, 2), (100, 100)):
+            state = self.metadata()
+            state["layers"][0]["version"] = layer_version
+            state["layers"][0]["cels"][0]["imageVersion"] = image_version
+            raw = copy.deepcopy(state)
+            self.assertEqual(helper.canonical_inspection(state), self.normalize(state))
+            self.assertEqual(state, raw)

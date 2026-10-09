@@ -68,6 +68,18 @@ include TypeScript (Apache-2.0) and Node.js type definitions from DefinitelyType
 (MIT). The lockfile records the installed dependency graph; npm dependencies are
 not vendored into this source repository and retain their package notices.
 
+## Apple Silicon review package
+
+The v0.9.0 package carries native runtime dependency notices and installed
+Homebrew build recipes/provenance in addition to the source licenses above.
+It includes the full project source snapshot and matching FreeType/LZ4 sources.
+FreeType selects its **GPLv2** option (not FTL); Highway and zstd select their
+BSD options. Only the BSD LZ4 library and 0BSD XZ liblzma are bundled, not their
+command-line tools. This software is based in part on the work of the Independent
+JPEG Group; the full IJG README is retained. See [packaging.md](docs/packaging.md)
+for materials, dependency review rules, and distribution limits. Node.js is a
+separate prerequisite, not part of the package.
+
 ## Project and artwork licensing
 
 Project-authored integration code is **GPL-2.0-only**; see [LICENSE](LICENSE) and

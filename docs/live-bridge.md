@@ -6,6 +6,13 @@ LibreSprite source; an installed stock LibreSprite does not have this bridge.
 
 ## Setup
 
+For the relocatable Apple Silicon `.app` and production MCP folder, see
+[packaging/setup](packaging.md). The instructions below describe source builds.
+Packaged defaults use a sibling app, a private system-temporary socket directory,
+and `~/Pictures/LibreSprite AI MCP/`, not checkout-local paths. `--doctor` provides
+read-only setup checks; `--doctor --connect` explicitly connects/pauses on
+disconnect. Neither adds an MCP tool or automatically resumes editing.
+
 Build the editor using [the native build guide](building.md), then build the MCP
 server with Node.js 20 or newer:
 

@@ -15,6 +15,13 @@
 
 namespace base {
 
+// LibreSprite AI MCP: added 2026-10-08; existing MIT terms retained.
+std::string get_app_bundle_id()
+{
+  NSString* identifier = [[NSBundle mainBundle] bundleIdentifier];
+  return identifier ? std::string([identifier UTF8String]) : std::string();
+}
+
 std::string get_lib_app_support_path()
 {
   NSArray* dirs = NSSearchPathForDirectoriesInDomains(

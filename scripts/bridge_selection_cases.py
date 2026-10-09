@@ -1,5 +1,6 @@
 """Cel transforms and explicit native selection regressions in a disposable GUI. GPLv2."""
 import base64
+from bridge_animation_cases import canonical_inspection
 import struct
 import zlib
 
@@ -16,7 +17,7 @@ def test_cels_and_selection(client, assets, smoke):
     clear = {"r": 0, "g": 0, "b": 0, "a": 0}
 
     def current():
-        return client.request("inspect", {"documentId": document_id})
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
 
     def mutate(method, params=None, error=None):
         before = current()

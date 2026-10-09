@@ -8,18 +8,20 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Optional packaging review uses the REAL relocated launcher/production server.
+const packagedMcp = process.env.LIBRESPRITE_MCP_ROOT;
 const directory = path.join(root, ".runtime", `edit-${Date.now().toString(36)}`);
 const assets = path.join(directory, "assets");
 await mkdir(assets, { recursive: true, mode: 0o700 });
 const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
 delete environment.SDL_VIDEODRIVER;
 const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [path.join(root, "dist/index.js")],
+  command: packagedMcp ? "bash" : process.execPath,
+  args: [packagedMcp ? path.join(packagedMcp, "start-mcp.sh") : path.join(root, "dist/index.js")],
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-editing-review", version: "0.8.0" });
+const client = new Client({ name: "libresprite-editing-review", version: "0.9.0" });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let stopping = false;
 process.once("SIGINT", () => { stopping = true; });
@@ -76,7 +78,7 @@ try {
     try { status = await request("connect"); break; }
     catch (error) { if (Date.now() > deadline) throw error; await wait(100); }
   }
-  assert.equal(status.bridgeVersion, "0.8.0");
+  assert.equal(status.bridgeVersion, "0.9.0");
   await request("set_paused", { paused: false });
   let doc = await request("create", { width: 48, height: 48, name: "Step 3 — RGBA crystal / crop undo" });
   documentId = doc.documentId;
@@ -119,6 +121,7 @@ try {
   await edit("export_png", { path: "rgba-after-crop.png", frame: 1, scale: 5 });
   await edit("export_sprite_sheet", { path: "rgba-contact.png", columns: 3, scale: 5, padding: 2 });
   await edit("export_animation", { path: "rgba-review.gif", format: "gif", scale: 5 });
+  if (packagedMcp) await edit("export_animation", { path: "rgba-review.apng", format: "apng", scale: 5 });
   const rgbaRevision = (await request("inspect", { documentId })).revision;
 
   doc = await request("create", { width: 48, height: 48, name: "Step 3 — exact indexed crystal", colorMode: "indexed" });
@@ -139,11 +142,11 @@ try {
   doc = await request("inspect", { documentId });
   assert.equal(doc.revision, rgbaRevision);
   const review = {
-    ...launched, bridgeVersion: status.bridgeVersion,
+    ...launched, bridgeVersion: status.bridgeVersion, ...(packagedMcp ? { packagedMcp } : {}),
     rgba: { documentId: rgbaDocumentId, revision: doc.revision, layerIds: { base, scene, group, gem, shine, study, border }, frames: 3, beforeSize: [64, 56], afterSize: [48, 48] },
     indexed: { documentId: indexedDocumentId, layerId: indexedLayer, paletteSize: swatches.length, transparentIndex: 0 },
     lastUndoStep: "ALL-frame canvas crop: restores original size, discarded gold stars and selection in ONE Undo",
-    assets: ["rgba-before-crop.ase", "rgba-after-crop.ase", "rgba-before-crop.png", "rgba-after-crop.png", "rgba-contact.png", "rgba-review.gif", "indexed-crystal.ase", "indexed-crystal.png"],
+    assets: ["rgba-before-crop.ase", "rgba-after-crop.ase", "rgba-before-crop.png", "rgba-after-crop.png", "rgba-contact.png", "rgba-review.gif", "indexed-crystal.ase", "indexed-crystal.png", ...(packagedMcp ? ["rgba-review.apng"] : [])],
   };
   await writeFile(path.join(directory, "review.json"), JSON.stringify(review, null, 2) + "\n");
   console.log(JSON.stringify(review, null, 2));

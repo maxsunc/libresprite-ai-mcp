@@ -38,6 +38,8 @@ namespace base {
   std::vector<std::string> get_font_paths();
 #if __APPLE__
   std::string get_lib_app_support_path();
+  // LibreSprite AI MCP: added 2026-10-08 for isolated packaged preferences.
+  std::string get_app_bundle_id();
 #endif
 
   // If the given filename is a relative path, it converts the
