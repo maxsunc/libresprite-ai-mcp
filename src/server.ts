@@ -31,6 +31,7 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const point = z.object({ x: coordinate, y: coordinate });
   const color = z.object({ r: channel, g: channel, b: channel, a: channel });
   const scale = z.number().int().min(1).max(16).default(1);
+  const previewScope = { layerId: documentId.optional(), includeHidden: z.boolean().default(false) };
   const sheet = { frames: z.array(frame).min(1).max(256).optional(), columns: z.number().int().min(1).max(16).optional(), scale, padding: z.number().int().min(0).max(16).default(0) };
   const direction = z.enum(["forward", "reverse", "pingpong"]);
   const tagColor = z.object({ r: channel, g: channel, b: channel, a: z.literal(255) });
@@ -60,6 +61,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
       isError: true,
       content: [{ type: "text" as const, text: JSON.stringify({ code: error instanceof BridgeError ? error.code : "ERROR", message: error instanceof Error ? error.message : String(error) }) }],
     };
+  }
+  function scopedCall(method: string, params: BridgeResult) {
+    if (params.includeHidden === true && params.layerId === undefined)
+      return failure(new BridgeError("INVALID_PARAMS", "includeHidden requires an explicit layerId."));
+    return call(method, params);
   }
 
   server.registerTool("libresprite_launch", {
@@ -136,11 +142,16 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     description: "Return an actual composited PNG image plus metadata for a zero-based frame. Nearest-neighbor scale preserves pixel edges. At most 1,048,576 output pixels. Includes revision; no file is written.",
     inputSchema: { documentId, frame, scale: z.number().int().min(1).max(16).default(1) }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("render", params));
-  server.registerTool("libresprite_render_frame_diff", {
-    description: "Read-only exact visual difference between two zero-based frames. Returns a transparent PNG with added pixels green, removed red, and modified color/alpha yellow; unchanged pixels transparent. Compares native rendered RGBA, including palette/blend/opacity effects, not raw cel bytes. Both alpha-zero pixels are equivalent regardless of RGB. Reports unscaled in-canvas counts, changed fraction/bounds, and before/after nonzero-alpha bounds/occupancy centroids (not tracked landmarks). No tolerance, off-canvas analysis, files, GUI selection, preferences, saved-state or undo changes. Works paused/inactive; finish GUI drawing/playback first. Nearest-neighbor scale1-16; max1,048,576 output pixels. Includes current revision/session.",
-    inputSchema: { documentId, fromFrame: frame, toFrame: frame, scale },
+  server.registerTool("libresprite_render_layer", {
+    description: "Read-only isolated native PNG of one explicit image layer or group subtree on the full transparent canvas; unrelated layers excluded. Preserves cel coordinates, native blend/opacity/palette effects within the subtree, not its appearance against excluded backdrops. Default respects target/ancestor/descendant visibility; hidden ancestors yield an empty preview. includeHidden:true ignores visibility only in this renderer for the target subtree (including hidden children), never toggles editor flags. Locked layers can be read. Returns unscaled nonzero-alpha counts/bounds/occupancy centroid; not landmarks or off-canvas data. No files, GUI focus/mask/preferences/history/saved-state changes. Works paused/inactive; idle GUI required. scale1-16 nearest-neighbor; max1,048,576 output pixels.",
+    inputSchema: { documentId, ...previewScope, layerId: documentId, frame, scale },
     annotations: { readOnlyHint: true, openWorldHint: false },
-  }, (params) => call("render_frame_diff", params));
+  }, (params) => call("render_layer", params));
+  server.registerTool("libresprite_render_frame_diff", {
+    description: "Read-only exact visual difference between two zero-based frames. Transparent PNG: added green, removed red, modified color/alpha yellow; unchanged transparent. Default compares full native RGBA composite; optional layerId isolates one layer/group on transparency, includeHidden:true explicitly ignores subtree visibility (requires layerId). Native blend/opacity/palettes included; not raw cel bytes or appearance against excluded layers. Both alpha-zero pixels are equivalent regardless of RGB. Reports unscaled in-canvas counts, changed fraction/bounds, before/after nonzero-alpha bounds/occupancy centroids (not landmarks). No tolerance, off-canvas analysis, files, GUI/mask/preferences/history/saved-state changes. Works paused/inactive; idle GUI required. scale1-16 nearest-neighbor; max1,048,576 output pixels. Includes revision/session.",
+    inputSchema: { documentId, fromFrame: frame, toFrame: frame, scale, ...previewScope },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => scopedCall("render_frame_diff", params));
   server.registerTool("libresprite_list_assets", {
     description: "Browse one directory inside the connected editor's asset root without opening documents. Returns directories and PNG/.ase/.aseprite files, directories first then bytewise name order, with root-relative paths and file sizes. Nonrecursive; symlinks/special files/other formats are skipped. Offset pagination (1-100 per page); directories above 4096 total entries are refused. Available while paused; directory changes may shift offsets.",
     inputSchema: { path: relativePath.default("."), offset: z.number().int().min(0).max(4096).default(0), limit: z.number().int().min(1).max(100).default(50) },
@@ -152,9 +163,9 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("preview_asset", params));
   server.registerTool("libresprite_contact_sheet", {
-    description: "Read-only PNG contact sheet of composited animation frames; does not write files or change GUI selection. Omit frames for all; explicit unique zero-based indices preserve supplied order. columns defaults ceil(sqrt(frame count)), max16 and no more than selected frames. scale is nearest-neighbor; padding (0-16) is OUTPUT pixels between cells and on all outer edges. Transparent padding/unused slots. Returns sheet frame rectangles/timings and SOURCE-index tag ranges; max 1,048,576 sheet pixels. Available while paused, including inactive documents.",
-    inputSchema: { documentId, ...sheet }, annotations: { readOnlyHint: true, openWorldHint: false },
-  }, (params) => call("contact_sheet", params));
+    description: "Read-only PNG contact sheet. Default full composites; optional layerId isolates a layer/group, includeHidden:true ignores subtree visibility only for this preview (requires layerId), not editor flags. Omit frames for all; explicit unique zero-based indices preserve order. columns defaults ceil(sqrt(frame count)), max16 and no more than selected frames. Nearest-neighbor scale; padding0-16 OUTPUT pixels between cells/on edges. Transparent padding/unused slots. Returns frame rectangles/timings and SOURCE-index tag ranges; max1,048,576 sheet pixels. No files or GUI/mask/preferences/history/saved-state changes. Works paused/inactive; idle GUI required. Isolated blends use only subtree backdrop.",
+    inputSchema: { documentId, ...sheet, ...previewScope }, annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => scopedCall("contact_sheet", params));
   server.registerTool("libresprite_render_onion_skin", {
     description: "Read-only native onion-skin PNG; no document/selection/onion-preference changes. Current frame is the full visible composite. Optional layerId limits GHOSTS only to an image layer or group. previous/next (0-8) clip at sprite ends, never wrap tags. tint colors previous red/next blue; merge uses original colors. position behind/front follows native rendering (opaque layers may hide behind ghosts; front can tint background layers). Opacity decreases by opacityStep per distance beyond the nearest frame, clamped 0-255. Available while paused; max1,048,576 output pixels.",
     inputSchema: { documentId, frame, scale, previous: z.number().int().min(0).max(8).default(1), next: z.number().int().min(0).max(8).default(1), mode: z.enum(["tint", "merge"]).default("tint"), position: z.enum(["behind", "front"]).default("behind"), opacity: channel.default(128), opacityStep: channel.default(32), layerId: documentId.optional() },

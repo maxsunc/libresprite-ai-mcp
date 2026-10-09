@@ -6,6 +6,9 @@
   added/removed/modified PNG, exact unscaled counts/bounds, and occupancy centroids.
   Fully transparent RGB payloads are ignored; palette/blend/opacity changes are
   included. Paused/inactive reads preserve selection, preferences, files and history.
+- Isolated image-layer/nested-group PNG previews with native blend/opacity/palettes,
+  optional scoped differences/contact sheets, and explicit hidden-content rendering.
+  Visibility override is local to a renderer, never a temporary document mutation.
 - Native measurement unit tests, independent PNG comparisons and focused disposable
   GUI regressions. Animation correction and native-CI/Linux work remain out of scope.
 - The approved local v0.9.0 package remains unchanged; new native features require

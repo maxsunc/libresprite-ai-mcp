@@ -3,6 +3,8 @@
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
+// Modified 2026-10-09 by LibreSprite AI MCP: per-render visibility override for
+// explicit read-only isolated previews. Default ordinary rendering is unchanged.
 
 #pragma once
 
@@ -106,6 +108,7 @@ namespace render {
     void setBgColor1(color_t color);
     void setBgColor2(color_t color);
     void setBgCheckedSize(const gfx::Size& size);
+    void setIgnoreLayerVisibility(bool ignore);
 
     // Sets the preview image. This preview image is an alternative
     // image to be used for the given layer/frame.
@@ -220,6 +223,7 @@ namespace render {
     color_t m_bgColor2;
     gfx::Size m_bgCheckedSize;
     int m_globalOpacity;
+    bool m_ignoreLayerVisibility = false;
     const Layer* m_selectedLayer;
     frame_t m_selectedFrame;
     const Image* m_previewImage;

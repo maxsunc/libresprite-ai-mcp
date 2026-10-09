@@ -3,6 +3,8 @@
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
+// Modified 2026-10-09 by LibreSprite AI MCP: per-render visibility override for
+// explicit read-only isolated previews. Default ordinary rendering is unchanged.
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -544,6 +546,11 @@ void Render::renderSprite(
   renderSprite(dstImage, sprite, frame, area, Zoom(1, 1));
 }
 
+void Render::setIgnoreLayerVisibility(bool ignore)
+{
+  m_ignoreLayerVisibility = ignore;
+}
+
 void Render::renderLayer(
   Image* dstImage,
   const Layer* layer,
@@ -812,7 +819,7 @@ void Render::renderLayer(
   BlendMode blendMode)
 {
   // we can't read from this layer
-  if (!layer->isVisible())
+  if (!m_ignoreLayerVisibility && !layer->isVisible())
     return;
 
   gfx::Rect extraArea;

@@ -50,6 +50,37 @@ the preview, not measurements; output is capped at 1,048,576 pixels.
 Compare visible poses with `libresprite_render`, then use the diff to locate
 changes. A large difference can be an intentional action pose, not an error.
 
+## Isolated layer/group previews
+
+Call `libresprite_render_layer` with `documentId`, an explicit `layerId`, `frame`,
+and optional `scale`/`includeHidden`:
+
+```json
+{ "documentId": 1, "layerId": 8, "frame": 2, "scale": 4, "includeHidden": false }
+```
+
+This returns a full-canvas PNG containing **only** that image layer or group
+subtree on transparency, plus `schema: libresprite-layer-preview-v1`, frame timing
+and `analysis` (visible pixel count, bounds, occupancy centroid). Native cel
+coordinates, opacity, blends, palette and subtree order are retained; off-canvas
+data is clipped only in the preview. Blends are evaluated against the transparent
+canvas/selected subtree, **not excluded backdrop layers**, so an isolated layer can
+look different from its contribution to the complete sprite.
+
+Default visibility includes ancestor checks: a hidden parent makes a child preview
+blank, and hidden descendants are omitted. Explicit `includeHidden: true` ignores
+visibility for the selected subtree, including hidden descendants, without
+changing any live flags or global preferences. Locked content can be inspected.
+Missing cels/empty groups produce transparent images; missing IDs are errors.
+
+`libresprite_render_frame_diff` and `libresprite_contact_sheet` also accept optional
+`layerId` and `includeHidden` with exactly these semantics. `includeHidden: true`
+requires `layerId`; it never means "show every hidden layer in the whole sprite."
+Both results identify their scope with `layerId` (null for the full composite)
+and `includeHidden`. Existing unscoped behavior and exports are unchanged. Contact
+sheet rectangles, zero-based source frames and durations label each tile in its
+returned manifest; no font/text is painted onto the pixel-art preview.
+
 ## Verification
 
 ```sh

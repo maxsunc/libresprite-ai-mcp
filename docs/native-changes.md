@@ -114,4 +114,8 @@ unchanged. Packaging and path-mapping build flags live in project-owned scripts.
 `src/app/automation/bridge.cpp` adds read-only native rendered frame differences.
 New GPL-2.0-only `src/app/automation/animation_analysis.h` measures nonzero-alpha
 occupancy, bounds/centroids and exact visual change categories, with standalone
-unit tests. It does not mutate documents or change the upstream renderer.
+unit tests. It does not mutate documents. Isolated layer/group rendering uses
+native `renderLayer`, with ancestor visibility checks and indexed-background
+handling. `src/render/render.cpp`/`.h` add an explicit per-renderer visibility
+override, defaulting off; ordinary rendering is unchanged. These modified upstream
+renderer files retain their MIT copyright/license notices.

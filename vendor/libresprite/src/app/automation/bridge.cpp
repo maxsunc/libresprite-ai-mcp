@@ -4,6 +4,7 @@
 // Updated 2026-10-08: independent cel copies and atomic animation-range editing.
 // Updated 2026-10-08: guarded canvas/layer operations, masks, brushes/index painting.
 // Updated 2026-10-09: read-only rendered frame differences and motion measurements.
+// Updated 2026-10-09: isolated layer/group previews without live visibility changes.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -609,6 +610,36 @@ private:
     renderer.renderSprite(image.get(), sprite, frame);
     return image;
   }
+  struct PreviewScope { Layer* layer = nullptr; bool includeHidden = false; };
+  PreviewScope previewScope(Sprite* sprite, const Json& params) {
+    PreviewScope scope;
+    if (params.contains("layerId")) scope.layer = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+    scope.includeHidden = params.contains("includeHidden") ? boolean(params, "includeHidden") : false;
+    require(scope.layer || !scope.includeHidden, "INVALID_PARAMS", "includeHidden requires an explicit layerId.");
+    return scope;
+  }
+  void scopeMetadata(Json& result, const PreviewScope& scope) {
+    result["layerId"] = scope.layer ? Json(scope.layer->id()) : Json(nullptr);
+    result["includeHidden"] = scope.includeHidden;
+  }
+  ImageRef scopedComposite(Sprite* sprite, frame_t frame, const PreviewScope& scope) {
+    if (!scope.layer) return composite(sprite, frame);
+    ImageRef image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
+    image->clear(0);
+    // renderLayer respects subtree visibility but does not walk ancestors.
+    if (!scope.includeHidden)
+      for (auto layer = scope.layer; layer; layer = layer->parent())
+        if (!layer->isVisible()) return image;
+    // Native sprite rendering fills the indexed transparent/background index
+    // before drawing cels. Do so only when the selected layer IS the background.
+    if (sprite->pixelFormat() == IMAGE_INDEXED && scope.layer == sprite->backgroundLayer())
+      image->clear(sprite->palette(frame)->getEntry(sprite->transparentColor()));
+    render::Render renderer;
+    renderer.setBgType(render::BgType::TRANSPARENT);
+    renderer.setIgnoreLayerVisibility(scope.includeHidden);
+    renderer.renderLayer(image.get(), scope.layer, frame);
+    return image;
+  }
   std::vector<uint8_t> encodePng(const Image* image, int scale = 1) {
     require(size_t(image->width()) * size_t(image->height()) * scale * scale <= MaxPixels,
             "LIMIT_EXCEEDED", "Image exceeds 1,048,576 output pixels. Reduce frames, columns, padding, or scale.");
@@ -658,6 +689,27 @@ private:
     result["frame"] = frame; result["scale"] = scale;
     return result;
   }
+  Json renderLayerPreview(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto scope = previewScope(sprite, params);
+    require(scope.layer, "INVALID_PARAMS", "An isolated preview requires layerId.");
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
+    require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels,
+            "LIMIT_EXCEEDED", "Isolated preview exceeds 1,048,576 output pixels. Use a smaller scale.");
+    auto result = previewMetadata(document);
+    auto image = scopedComposite(sprite, frame, scope);
+    automation::FrameAnalysis analysis;
+    for (int y = 0; y < sprite->height(); ++y)
+      for (int x = 0; x < sprite->width(); ++x) analysis.add(x, y, image->getPixel(x, y));
+    result["schema"] = "libresprite-layer-preview-v1";
+    scopeMetadata(result, scope);
+    result["frame"] = frame; result["durationMs"] = sprite->frameDuration(frame); result["scale"] = scale;
+    result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
+    result["analysis"] = analysis.json();
+    addPng(result, encodePng(image.get(), scale));
+    return result;
+  }
   Json renderFrameDiff(Document* document, const Json& params) {
     auto sprite = document->sprite();
     int from = integer(params, "fromFrame", 0, sprite->lastFrame());
@@ -665,8 +717,10 @@ private:
     int scale = params.contains("scale") ? integer(params, "scale", 1, 16) : 1;
     require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels,
             "LIMIT_EXCEEDED", "Difference preview exceeds 1,048,576 output pixels. Use a smaller scale.");
+    auto scope = previewScope(sprite, params);
     auto result = previewMetadata(document);
-    auto before = composite(sprite, from), after = composite(sprite, to);
+    scopeMetadata(result, scope);
+    auto before = scopedComposite(sprite, from, scope), after = scopedComposite(sprite, to, scope);
     ImageRef image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
     automation::FrameDifference difference;
     for (int y = 0; y < sprite->height(); ++y)
@@ -706,8 +760,9 @@ private:
     return result;
   }
   struct Sheet { ImageRef image; Json manifest; };
-  Sheet spriteSheet(Document* document, const Json& params) {
+  Sheet spriteSheet(Document* document, const Json& params, bool isolated = false) {
     auto sprite = document->sprite();
+    auto scope = isolated ? previewScope(sprite, params) : PreviewScope{};
     std::vector<int> frames;
     if (params.contains("frames")) {
       require(params["frames"].is_array() && !params["frames"].empty() && params["frames"].size() <= 256, "INVALID_PARAMS", "Provide 1 to 256 unique frame indices, or omit frames for all.");
@@ -730,7 +785,7 @@ private:
     result.image->clear(0);
     for (size_t i = 0; i < frames.size(); ++i) {
       int x = padding + int(i % columns) * (cellWidth + padding), y = padding + int(i / columns) * (cellHeight + padding);
-      auto image = composite(sprite, frames[i]);
+      auto image = scopedComposite(sprite, frames[i], scope);
       for (int dy = 0; dy < cellHeight; ++dy)
         for (int dx = 0; dx < cellWidth; ++dx) result.image->putPixel(x + dx, y + dy, image->getPixel(dx / scale, dy / scale));
       result.manifest["frames"].push_back({{"frame", frames[i]}, {"x", x}, {"y", y}, {"width", cellWidth}, {"height", cellHeight}, {"durationMs", sprite->frameDuration(frames[i])}});
@@ -742,7 +797,9 @@ private:
   }
   Json contactSheet(Document* document, const Json& params) {
     auto result = previewMetadata(document);
-    auto sheet = spriteSheet(document, params);
+    auto scope = previewScope(document->sprite(), params);
+    scopeMetadata(result, scope);
+    auto sheet = spriteSheet(document, params, true);
     result["sheet"] = sheet.manifest;
     addPng(result, encodePng(sheet.image.get()));
     return result;
@@ -2041,7 +2098,16 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas", "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection", "set_bitmap_selection", "render_frame_diff"};
+    static const std::vector<std::string> methods = {
+      "status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save",
+      "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration",
+      "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin",
+      "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag",
+      "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection",
+      "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
+      "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
+      "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
+      "set_bitmap_selection", "render_frame_diff", "render_layer"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
     if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.10.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
@@ -2066,7 +2132,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -2097,6 +2163,7 @@ private:
       if (method == "render_onion_skin") return renderOnionSkin(document, params);
       if (method == "render_selection") return renderSelection(document, params);
       if (method == "render_frame_diff") return renderFrameDiff(document, params);
+      if (method == "render_layer") return renderLayerPreview(document, params);
       return renderFrame(document, params);
     }
     if (method == "activate_document") return activateDocument(document, params);

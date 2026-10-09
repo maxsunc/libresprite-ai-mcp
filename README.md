@@ -114,10 +114,12 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **60 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **61 tools**, and limitations.
 
-Read-only frame differences now highlight added/removed/modified rendered pixels
-and report exact counts, bounds, and occupancy centroids. See
+Read-only frame differences highlight added/removed/modified rendered pixels
+and report exact counts, bounds, and occupancy centroids. Isolated layer/group
+previews, scoped differences/contact sheets and explicit renderer-only hidden
+content inspection are also available. See
 [animation inspection](docs/animation-inspection.md). The approved v0.9.0 package
 has not been rebuilt; these source features require a new development editor.
 
