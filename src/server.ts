@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.5.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.6.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -94,17 +94,32 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     } catch (error) { return failure(error); }
   });
   server.registerTool("libresprite_connect", {
-    description: "Connect/reconnect and inspect session ID, paused state, and asset root. Does not resume editing. Reconnect after a timeout and inspect the document instead of blindly repeating an edit.",
+    description: "Connect/reconnect and inspect session ID, connection/pause state, editor control text, local user-pause latch, and asset root. Does not resume editing. A local pause persists through reconnect and must be released with the editor's Resume button. Reconnect after a timeout and inspect instead of blindly repeating an edit.",
     inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },
   }, () => call("status"));
   server.registerTool("libresprite_set_paused", {
-    description: "Pause or explicitly resume agent edits. Pause before manual editing. Disconnect also pauses the bridge. Reads remain available while paused; busy GUI gestures/dialogs are refused.",
+    description: "Pause or explicitly resume agent operations, including navigation/closing. Pause before manual editing. Disconnect pauses too. Cannot override a pause set with the editor button (USER_PAUSED); the person must click Resume there. Resume refuses drawing/playback/dialogs; pausing remains available. Reads work while paused.",
     inputSchema: { paused: z.boolean() }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, (params) => call("set_paused", params));
   server.registerTool("libresprite_list_documents", {
     description: "List documents, IDs, dimensions, frame counts, and the active document in this connected editor only.",
     inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false },
   }, () => call("list_documents"));
+  server.registerTool("libresprite_activate_document", {
+    description: "Explicitly switch to an already-open sprite in this editor. Requires target documentId/current expectedRevision and expectedActiveDocumentId from list_documents (null when Home/no sprite is active); refuses if the user changed active document. Requires resumed bridge and idle GUI/target views. Does not edit pixels, saved state, mask, or undo history; restores the target view's frame/layer. Already-active target is a no-op. Never implicitly resumes.",
+    inputSchema: { ...target, expectedActiveDocumentId: documentId.nullable() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("activate_document", params));
+  server.registerTool("libresprite_set_active_site", {
+    description: "Focus a layer and/or zero-based frame for review in the ACTIVE sprite without editing pixels, selection mask, saved state, revision, or undo history. Requires current revision, resumed bridge, and idle GUI. Validate all supplied targets before changing either. Hidden/locked/group layers can be focused but are not unlocked/shown/painted. Omitted layer/frame stays unchanged. Requires at least one of layerId/frame. To switch sprites use activate_document explicitly first.",
+    inputSchema: { ...target, layerId: documentId.optional(), frame: frame.optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("set_active_site", params));
+  server.registerTool("libresprite_close_document", {
+    description: "Explicitly close the ACTIVE, saved, unmodified sprite and ALL its cloned views; never quit the editor. Requires current revision, confirm:true, resumed bridge, and idle target views. Modified or never-saved sprites are refused (UNSAVED_CHANGES); save a native file first. No Save/Discard dialog or force/discard option. Closing is NOT undoable and releases that document's undo history/IDs; files remain unchanged. Result reports closedDocumentId and the new activeDocumentId (possibly null). Inspect the list after an uncertain result; never retry blindly.",
+    inputSchema: { ...target, confirm: z.literal(true) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("close_document", params));
   server.registerTool("libresprite_inspect", {
     description: "Inspect document revision, layers/cels, zero-based frames and durations, palettes, tags, document-wide selection bounds/count/visibility, and undo state. Selection bitmap changes also advance revision. Use its revision for subsequent edits. IDs are local to this editor session.",
     inputSchema: { documentId }, annotations: { readOnlyHint: true, openWorldHint: false },

@@ -150,7 +150,9 @@ def test_assets_previews_exports(client, assets, smoke):
     assert client.request("list_assets", {"path": "preview-assets/crowded"})["entries"] == []
     (crowded / "one-too-many").write_bytes(b"")
     client.request("list_assets", {"path": "preview-assets/crowded"}, expected_error="LIMIT_EXCEEDED")
-    assert client.request("list_documents") == documents and current() == before
+    after_documents, after = client.request("list_documents"), current()
+    assert after_documents == documents, ("Documents changed during detached preview/browsing", documents, after_documents)
+    assert after == before, ("Sprite changed during detached preview/browsing", before, after)
     print("PASS: bounded root asset browsing/pagination, symlink filtering/escape guards, detached native/PNG thumbnails while paused.")
 
     target = {"documentId": document_id, "expectedRevision": before["revision"]}

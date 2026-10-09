@@ -48,3 +48,12 @@ See [the changelog](../CHANGELOG.md), [live bridge semantics](live-bridge.md), a
 retained licenses. The standalone baseline verifier intentionally reports these
 native modifications as differences; it is not a test that the current modified
 editor must match unmodified upstream byte-for-byte.
+
+## 2026-10-08 — v0.6.0 user control and navigation
+
+`src/app/automation/bridge.cpp` additionally owns a persistent status-bar button
+in opt-in windows, with a local pause latch that remote requests cannot override.
+It exposes guarded explicit activation, non-editing layer/frame focus, and
+saved/unmodified-only document closing through the existing native view/model
+lifecycle. The standalone bridge files retain GPL-2.0-only licensing. No new
+changes to upstream UI source files are needed for the control.

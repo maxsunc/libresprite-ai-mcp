@@ -1,5 +1,21 @@
 # Development milestones
 
+## 0.6.0 — Live workflow and user control (2026-10-08)
+
+- 45 MCP tools: explicit guarded document activation, non-editing frame/layer
+  focus, and active-document closing with mandatory confirmation.
+- Persistent opt-in status-bar control shows waiting/paused/enabled states and
+  pauses/resumes the bridge without returning to chat. Local pauses cannot be
+  remotely resumed and persist through disconnect/reconnect.
+- Switching validates the expected previously active document and target revision.
+  Focus validates all supplied targets before changing either and preserves
+  pixels, masks, revision, saved state, and native undo history.
+- Closing refuses modified/never-saved sprites, busy views, inactive targets,
+  and stale revisions; destroys all target views through the native lifecycle,
+  never opens a Save/Discard dialog or quits the application.
+- Adds disposable-GUI navigation regressions and an actual MCP manual-review
+  demo with generated test sprites. Later roadmap milestones await user review.
+
 ## Publication preparation — 2026-10-08
 
 - Adds the conventional root GPLv2 license, credits/third-party notice index,

@@ -33,7 +33,8 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
         assert.equal(request.params.scale, 1);
         result = { revision: 2, pngBase64: "iVBORw0KGgo=", frame: 0 };
       }
-      if (request.method === "set_pixels") socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Paused", data: { code: "PAUSED" } } }) + "\n");
+      if (request.method === "set_paused" && request.params.paused === false) socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Resume locally in the editor", data: { code: "USER_PAUSED" } } }) + "\n");
+      else if (request.method === "set_pixels") socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Paused", data: { code: "PAUSED" } } }) + "\n");
       else socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\n");
     });
   });
@@ -45,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 42);
+    assert.equal(tools.length, 45);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -61,6 +62,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const paused = await client.callTool({ name: "libresprite_set_pixels", arguments: { documentId: 1, expectedRevision: 1, layerId: 1, frame: 0, pixels: [{ x: 0, y: 0, r: 1, g: 2, b: 3, a: 255 }] } });
     assert.equal(paused.isError, true);
     assert.equal(JSON.parse((paused.content as Array<{ text: string }>)[0]!.text).code, "PAUSED");
+    const localPause = await client.callTool({ name: "libresprite_set_paused", arguments: { paused: false } });
+    assert.equal(localPause.isError, true);
+    assert.equal(JSON.parse((localPause.content as Array<{ text: string }>)[0]!.text).code, "USER_PAUSED");
+    assert.equal(tools.find((tool) => tool.name === "libresprite_close_document")?.annotations?.destructiveHint, true);
     const target = { documentId: 1, expectedRevision: 1 };
     const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
     const valid = [
@@ -94,6 +99,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["render_selection", { documentId: 1, frame: 0 }],
       ["fill_selection", { ...paint }],
       ["translate_selection", { ...paint, dx: -1, dy: 2 }],
+      ["activate_document", { ...target, expectedActiveDocumentId: null }],
+      ["set_active_site", { ...target, layerId: 1, frame: 0 }],
+      ["close_document", { ...target, confirm: true }],
     ] as const;
     for (const [method, args] of valid) {
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
@@ -162,6 +170,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["render_selection", { documentId: 1, frame: 0, mode: "rgba" }],
       ["fill_selection", { ...paint, color: { ...paint.color, a: 300 } }],
       ["translate_selection", { ...paint, dx: -1024, dy: 0 }],
+      ["activate_document", { ...target }],
+      ["activate_document", { ...target, expectedActiveDocumentId: 0 }],
+      ["set_active_site", { ...target, frame: 256 }],
+      ["set_active_site", { ...target, layerId: 0 }],
+      ["close_document", { ...target }],
+      ["close_document", { ...target, confirm: false }],
       ["draw_stroke", { ...paint, points: [{ x: 0, y: 0 }], respectSelection: "yes" }],
     ] as const;
     for (const [method, args] of rejected) {

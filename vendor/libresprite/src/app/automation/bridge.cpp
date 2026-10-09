@@ -1,5 +1,6 @@
 // LibreSprite AI MCP: created 2026-10-01; license notice clarified 2026-10-08.
 // Distributed under GNU GPL version 2 only (GPL-2.0-only); see the root LICENSE.
+// Updated 2026-10-08: visible user controls and guarded document/site navigation.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -40,7 +41,9 @@
 #include "app/transaction.h"
 #include "app/ui/editor/editor.h"
 #include "app/ui/editor/standby_state.h"
+#include "app/ui/document_view.h"
 #include "app/ui/main_window.h"
+#include "app/ui/status_bar.h"
 #include "app/ui_context.h"
 #include "base/base64.h"
 #include "base/sha1_rfc3174.h"
@@ -62,6 +65,8 @@
 #include "she/surface.h"
 #include "she/system.h"
 #include "ui/manager.h"
+#include "ui/button.h"
+#include "ui/tooltips.h"
 #include "ui/timer.h"
 #include "../../../../nlohmann/json.hpp"
 
@@ -206,7 +211,7 @@ Json summary(Document* document) {
   return {{"documentId", document->id()}, {"name", document->filename()},
           {"width", sprite->width()}, {"height", sprite->height()},
           {"frameCount", sprite->totalFrames()}, {"colorMode", sprite->pixelFormat() == IMAGE_RGB ? "rgba" : sprite->pixelFormat() == IMAGE_INDEXED ? "indexed" : "grayscale"},
-          {"modified", document->isModified()}};
+          {"modified", document->isModified()}, {"hasFile", document->isAssociatedToFile()}};
 }
 }
 
@@ -236,9 +241,21 @@ public:
       std::ostringstream session;
       for (int i = 0; i < 4; ++i) session << std::hex << std::setw(8) << std::setfill('0') << random();
       m_session = session.str();
+      // Only opt-in editor processes get this persistent control. Ordinary
+      // status messages (brush, coordinates, etc.) cannot overwrite its state.
+      m_control.reset(new ui::Button("AI: Waiting (paused)"));
+      m_control->setId("automation-control");
+      setup_mini_look(m_control.get());
+      m_control->Click.connect([this] { toggleFromEditor(); });
+      auto tooltip = new ui::TooltipManager;
+      m_control->addChild(tooltip);
+      tooltip->addTooltipFor(m_control.get(), "Pause agent requests before manual work. A local pause can only be released here.", ui::TOP);
+      StatusBar::instance()->addChild(m_control.get());
+      updateControl();
       m_timer.Tick.connect([this] { tick(); });
       m_timer.start();
     } catch (...) {
+      removeControl();
       close(m_listener);
       if (m_bound) unlink(m_path.c_str());
       throw;
@@ -247,6 +264,7 @@ public:
   ~Impl() {
     m_timer.stop();
     disconnect();
+    removeControl();
     if (m_listener >= 0) close(m_listener);
     if (m_bound) unlink(m_path.c_str());
   }
@@ -257,18 +275,52 @@ private:
   fs::path m_root;
   ui::Timer m_timer;
   int m_listener = -1, m_client = -1;
-  bool m_bound = false, m_paused = true;
+  bool m_bound = false, m_paused = true, m_pausedByUser = false;
+  std::unique_ptr<ui::Button> m_control;
   size_t m_sent = 0, m_cacheBytes = 0;
   Clock::time_point m_progress = Clock::now();
   std::deque<Cached> m_cache;
   std::map<ObjectId, Revision> m_revisions;
 
+  void updateControl() {
+    if (!m_control) return;
+    m_control->setText(m_client < 0 ? "AI: Waiting (paused)" : m_paused ? "AI: Paused | Resume" : "AI: Enabled | Pause");
+    m_control->setEnabled(m_client >= 0);
+    if (m_control->parent()) m_control->parent()->layout();
+    m_control->invalidate();
+  }
+  void removeControl() {
+    if (!m_control) return;
+    auto parent = m_control->parent();
+    if (parent) parent->removeChild(m_control.get());
+    m_control.reset();
+    if (parent) parent->layout();
+  }
+  void toggleFromEditor() {
+    if (m_client < 0) return;
+    if (!m_paused) {
+      // Pausing never waits for an idle editor. Native operations are UI-thread
+      // synchronous: this stops the NEXT request, not an operation in progress.
+      m_paused = true;
+      m_pausedByUser = true;
+    } else {
+      try { uiIdle(); }
+      catch (const std::exception& error) {
+        StatusBar::instance()->setStatusText(3000, "%s", error.what());
+        return;
+      }
+      m_pausedByUser = false;
+      m_paused = false;
+    }
+    updateControl();
+  }
   void disconnect() {
     if (m_client >= 0) close(m_client);
     m_client = -1;
     m_input.clear(); m_output.clear(); m_sent = 0;
     // Disconnect is a safety boundary: edits require explicit resume.
     m_paused = true;
+    updateControl();
   }
   void tick() noexcept {
     try {
@@ -278,6 +330,7 @@ private:
         if (!sameUser(fd)) { close(fd); return; }
         try { nonblocking(fd); } catch (...) { close(fd); throw; }
         m_client = fd; m_progress = Clock::now();
+        updateControl();
       }
       if ((!m_input.empty() || !m_output.empty()) && Clock::now() - m_progress > std::chrono::seconds(5)) { disconnect(); return; }
       if (!m_output.empty()) {
@@ -413,6 +466,63 @@ private:
   void checkRevision(Document* document, const Json& params) {
     int expected = integer(params, "expectedRevision", 1, INT32_MAX);
     require(inspect(document)["revision"] == expected, "STALE_REVISION", "Document changed. Inspect it again before editing.");
+  }
+  void documentViewsIdle(Document* document) {
+    for (auto view : UIContext::instance()->getAllDocumentViews(document)) {
+      auto editor = view->editor();
+      require(!editor->isPlaying() && dynamic_cast<StandbyState*>(editor->getState().get()), "BUSY", "Finish playback/drawing/transforming in every view of the target document first.");
+    }
+  }
+  Json activateDocument(Document* document, const Json& params) {
+    auto ctx = UIContext::instance();
+    require(params.contains("expectedActiveDocumentId"), "INVALID_PARAMS", "Supply expectedActiveDocumentId (null when no sprite is active).");
+    auto active = ctx->activeDocument();
+    const auto& expected = params["expectedActiveDocumentId"];
+    if (expected.is_null()) require(!active, "ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.");
+    else {
+      int id = integer(params, "expectedActiveDocumentId", 1, INT32_MAX);
+      require(active && active->id() == ObjectId(id), "ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.");
+    }
+    DocumentReader reader(document, 0);
+    checkRevision(document, params);
+    documentViewsIdle(document);
+    auto view = ctx->getFirstDocumentView(document);
+    require(view, "VIEW_NOT_FOUND", "Target document has no editable GUI view.");
+    // Preserve the current cloned view when this document is already active.
+    if (active != document) ctx->setActiveView(view);
+    return inspect(document);
+  }
+  Json focusSite(Document* document, const Json& params) {
+    DocumentReader reader(document, 0);
+    checkRevision(document, params);
+    require(params.contains("layerId") || params.contains("frame"), "INVALID_PARAMS", "Supply layerId and/or frame.");
+    auto editor = UIContext::instance()->activeEditor();
+    auto layer = params.contains("layerId") ? findLayer(document->sprite(), integer(params, "layerId", 1, INT32_MAX)) : editor->layer();
+    int frame = params.contains("frame") ? integer(params, "frame", 0, document->sprite()->lastFrame()) : editor->frame();
+    // Validate both BEFORE changing either. Locked/hidden/group layers can be
+    // focused for review; this neither paints nor changes their properties.
+    if (editor->layer() != layer) editor->setLayer(layer);
+    editor->setFrame(frame);
+    editor->requestFocus();
+    set_current_palette(document->sprite()->palette(frame), false);
+    update_screen_for_document(document);
+    return inspect(document);
+  }
+  Json closeDocument(Document* document, const Json& params) {
+    require(boolean(params, "confirm"), "INVALID_PARAMS", "Closing a document requires confirm: true.");
+    auto ctx = UIContext::instance();
+    DocumentDestroyer destroyer(ctx, document, 0);
+    checkRevision(document, params);
+    require(document->isAssociatedToFile() && !document->isModified(), "UNSAVED_CHANGES", "Save this sprite to a native file before closing. Discarding unsaved work is not supported.");
+    documentViewsIdle(document);
+    auto id = document->id();
+    int lastRevision = inspect(document)["revision"];
+    // Use native document destruction, not CloseFile's interactive Save/Discard
+    // dialog. This closes all views and releases undo history without quitting.
+    destroyer.destroyDocument();
+    m_revisions.erase(id);
+    App::instance()->updateDisplayTitleBar();
+    return {{"closedDocumentId", id}, {"lastRevision", lastRevision}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"sessionId", m_session}};
   }
   fs::path filePath(const Json& params, bool saving) {
     fs::path input(text(params, "path"));
@@ -1317,14 +1427,18 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.5.0"}, {"methods", methods}, {"sessionId", m_session}, {"paused", m_paused}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.6.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
-      m_paused = params["paused"].get<bool>();
-      return {{"paused", m_paused}, {"sessionId", m_session}};
+      bool paused = params["paused"].get<bool>();
+      require(paused || !m_pausedByUser, "USER_PAUSED", "Agent edits were paused in the editor. Click Resume in the editor to release the local pause.");
+      if (!paused) uiIdle();
+      m_paused = paused;
+      updateControl();
+      return {{"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"sessionId", m_session}};
     }
     uiIdle();
     if (method == "list_assets") return listAssets(params);
@@ -1368,7 +1482,10 @@ private:
       if (method == "render_selection") return renderSelection(document, params);
       return renderFrame(document, params);
     }
+    if (method == "activate_document") return activateDocument(document, params);
     require(ctx->activeDocument() == document, "INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.");
+    if (method == "set_active_site") return focusSite(document, params);
+    if (method == "close_document") return closeDocument(document, params);
     if (method == "export_png" || method == "export_sprite_sheet" || method == "export_animation") {
       DocumentReader reader(document, 0);
       checkRevision(document, params);

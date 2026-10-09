@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Integration test against a NEW real GUI process, never the user's editor."""
 import base64
+import argparse
 import importlib.util
 import json
 import os
@@ -14,6 +15,7 @@ from bridge_workflow_cases import test_layers_frames_drawing
 from bridge_preview_cases import test_assets_previews_exports
 from bridge_metadata_cases import test_palettes_tags_animation
 from bridge_selection_cases import test_cels_and_selection
+from bridge_navigation_cases import test_navigation
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -52,6 +54,9 @@ class Client:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--navigation-only", action="store_true", help="Run step 1 checks in a fresh GUI, including closing the last sprite.")
+    options = parser.parse_args()
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="test-", dir=runtime) as temporary:
@@ -75,7 +80,8 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.5.0" and "translate_selection" in status["methods"]
+                assert status["bridgeVersion"] == "0.6.0" and "close_document" in status["methods"]
+                assert status["connected"] and not status["pausedByUser"] and status["controlText"] == "AI: Paused | Resume"
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
                 malformed = json.loads(client.reader.readline())
@@ -83,6 +89,12 @@ def main():
                 assert client.request("list_documents")["documents"] == []
                 client.request("create", {"width": 16, "height": 16, "name": "Test"}, expected_error="PAUSED")
                 client.request("set_paused", {"paused": False})
+                if options.navigation_only:
+                    test_navigation(client, assets, SMOKE)
+                    assert client.request("list_documents")["activeDocumentId"] is None
+                    assert client.request("status")["pid"] == process.pid
+                    print("PASS: closing the last saved sprite leaves an empty, connected editor rather than quitting.")
+                    return
                 document = client.request("create", {"width": 16, "height": 16, "name": "Live bridge test"})
                 document_id = document["documentId"]
                 layer_id = document["layers"][0]["layerId"]
@@ -176,6 +188,7 @@ def main():
                 test_assets_previews_exports(client, assets, SMOKE)
                 test_palettes_tags_animation(client, assets, SMOKE)
                 test_cels_and_selection(client, assets, SMOKE)
+                test_navigation(client, assets, SMOKE)
             finally:
                 if client:
                     client.close()

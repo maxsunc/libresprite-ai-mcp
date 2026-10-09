@@ -101,6 +101,9 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_connect` | Connect/reconnect and inspect bridge status |
 | `libresprite_set_paused` | Pause/resume agent mutations |
 | `libresprite_list_documents` | List IDs and identify the active document |
+| `libresprite_activate_document` | Explicit revision/previous-active guarded tab switch |
+| `libresprite_set_active_site` | Focus a layer/frame without editing document data |
+| `libresprite_close_document` | Confirmed saved/unmodified active-document close |
 | `libresprite_inspect` | Layers/cels, frames/durations, palettes, tags, revision |
 | `libresprite_render` | Composite a frame to PNG image content |
 | `libresprite_list_assets` | Browse supported assets/directories inside the root |
@@ -139,7 +142,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **42 tools** in server/bridge version **0.5.0**. Rebuild the editor
+There are **45 tools** in server/bridge version **0.6.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -147,6 +150,61 @@ provide those fields; a missing new method requires rebuilding/relaunching,
 not blindly retrying it.
 Restart/refresh the MCP server in your client after TypeScript upgrades too:
 already-running stdio servers retain their original tool schemas/catalog.
+
+## Visible user controls and navigation
+
+Only bridge-enabled windows have the persistent bottom-right **AI control**:
+
+- **AI: Waiting (paused)**: no client; disabled. Disconnect always pauses edits.
+- **AI: Paused | Resume**: connected but agent mutations/navigation are blocked.
+- **AI: Enabled | Pause**: connected and permitted to issue guarded operations;
+  this does not mean an operation is currently running.
+
+Click **Pause** before manual work. That sets a local user-pause latch: the agent
+cannot override it with `set_paused(false)` (`USER_PAUSED`). It survives reconnect
+and only the editor's **Resume** button releases it. Ordinary startup/disconnect
+pauses without that latch can still be explicitly resumed through MCP.
+Resume refuses busy drawing/playback/dialogs. Pause is available regardless of
+the idle checks, but native work is synchronous: a click stops subsequent
+requests, not a request already executing on the UI thread. This is not a
+mid-operation cancellation button. `connect` returns `connected`, `paused`,
+`pausedByUser`, and `controlText` for diagnostics.
+
+All three navigation tools require a resumed bridge, current target revision,
+and idle GUI. They are **not read-only tools**, even where document data is
+unchanged; pausing also blocks agent-driven navigation and closing.
+
+### Activate an open document
+
+`activate_document` requires `documentId`, `expectedRevision`, and
+`expectedActiveDocumentId` from `list_documents` (explicit null when Home/no
+sprite is active). If the person changes tabs in between, the request fails with
+`ACTIVE_DOCUMENT_CHANGED` rather than stealing focus. It selects an existing
+native view and restores its frame/layer; already-active targets keep the current
+view. No pixels, masks, saved state, revision, or undo history are changed.
+Busy target views are refused too. It does not implicitly open/save/resume.
+
+### Focus a frame or layer
+
+`set_active_site` requires the **active** document, revision, and at least one of
+`layerId`/`frame`. Omitted values remain unchanged. Both values are validated
+before either is changed. Hidden, locked, and group layers can be focused for
+review but are not shown/unlocked/painted. It refreshes the native timeline,
+palette, and frame feedback without editing pixels/mask/history/saved state or
+advancing the revision. Frame indices are zero-based.
+
+### Close a saved document
+
+`close_document` requires the **active** document, revision, and `confirm: true`.
+The sprite must have an associated saved file (`hasFile: true` in inspect/list)
+and be unmodified; even a never-saved blank sprite is refused with
+`UNSAVED_CHANGES`. Save a native copy first. There is no discard/force/save-dialog
+mode. Every target view must be idle. Closing removes **all cloned views** of
+the sprite via native destruction, releases its undo history and session IDs,
+and is **not undoable**, but does not delete/change saved files or quit the editor.
+It returns `closedDocumentId`, `lastRevision`, and the newly selected
+`activeDocumentId` (possibly null). Reopening creates a new document ID.
+After an uncertain response list documents instead of blindly retrying.
 
 ## Layers, drawing, and animation
 
@@ -611,11 +669,13 @@ supported—save `.ase` to retain the editable sprite.
 
 - **Pause before editing manually.** Native pause blocks agent operations; it
   does not disable your mouse/keyboard or lock the document against you. There
-  is no dedicated pause button in the editor yet; use the MCP tool, disconnect
-  the MCP client, or close the agent-owned window to stop agent activity.
+  is a dedicated AI Pause/Resume control in bridge-enabled editor status bars;
+  local pauses cannot be remotely overridden. Disconnect also pauses operations.
 - Mutations target only the **active GUI document**, with explicit document,
   layer, and frame identifiers. The bridge never silently switches documents
   for an edit. Create/open visibly select the new document.
+  `activate_document` is the explicit, guarded exception for switching tabs;
+  focus and closing still require the active document.
 - An edit, save, export, undo, or redo requires the latest revision. Revisions are
   derived from metadata, native history, actual image bytes, and selection bitmap
   bits/visibility. A manual edit
@@ -709,6 +769,12 @@ explicit unlink/undo/rollback, bitmap combinations and saved-state-preserving
 selection undo, selection-aware drawing/fill barriers, overlap-safe pixel+mask
 moves/copies, transparent replacement, all new mutation safety gates, and
 pre-allocation patch/preview limits.
+`scripts/bridge_navigation_cases.py` covers explicit switching/previous-active
+guards, atomic frame/layer validation, hidden/locked/group review focus,
+pixel/mask/history/revision preservation, saved-only closing, replay/reopen, and
+unchanged saved files/other documents. The manual user-pause test is described in
+[testing-v0.6.md](testing-v0.6.md), with a real MCP demo that holds a connection
+for testing the button and refuses to override a local pause.
 Do not interact with that test window while it runs. The tests do not establish
 cross-platform GUI correctness or unlimited hostile-input resilience.
 

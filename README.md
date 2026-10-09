@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.5.0.** This is an independent development project, not an
+**Source alpha — v0.6.0.** This is an independent development project, not an
 official LibreSprite release. It requires building the custom editor; a stock
 LibreSprite installation does not contain this bridge. No prebuilt app bundle
 is currently provided.
@@ -83,7 +83,12 @@ masks, selection-aware drawing, and overlap-safe selection moves/copies are supp
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **42 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **45 tools**, and limitations.
+
+The opt-in editor now has a persistent **AI status / Pause / Resume** button in
+the bottom-right status bar. A pause made there cannot be remotely overridden.
+Explicit document activation, frame/layer focus, and saved-only document closing
+support everyday navigation without silently switching the target of an edit.
 
 ```sh
 npm test
@@ -102,7 +107,8 @@ tools never automatically close or kill a window that might hold unsaved work.
 ## Editing safeguards and limits
 
 - Agent editing starts paused and pauses on disconnect; explicitly resume before
-  mutations and pause before manual work.
+  mutations and pause before manual work. A local user pause persists through
+  reconnect and must be released using the editor's Resume button.
 - Writes require the active document and its current revision. After a timeout
   or uncertain result, reconnect and inspect rather than blindly retrying.
 - Native edits are undoable. Saves/exports publish atomically with overwrite
@@ -119,10 +125,16 @@ editing important artwork.
 
 ## Next priorities
 
-1. Easier installation and reproducible Apple Silicon application packaging.
-2. Visible agent connection/status and pause controls inside the editor.
-3. Safe document switching, cel copy/paste, and guarded multi-frame workflows.
+1. Cel copy/paste and guarded multi-frame animation workflows.
+2. Remaining editing gaps: canvas operations, richer selections/layers/brushes.
+3. Easier installation and reproducible Apple Silicon application packaging.
 4. Automated native builds/regressions and validated Linux support.
+
+The v0.6.0 user-control/navigation milestone is ready for manual review. Run
+`node scripts/demo-navigation.mjs` for a separate editor with generated, saved
+test sprites and a connected pause-button monitor. See
+[the step 1 test checklist](docs/testing-v0.6.md). Subsequent milestones should
+wait until this review is approved.
 
 See [the development milestones](CHANGELOG.md) for what is already implemented.
 Bug reports and focused contributions are welcome through the
