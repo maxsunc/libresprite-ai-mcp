@@ -65,6 +65,8 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   function scopedCall(method: string, params: BridgeResult) {
     if (params.includeHidden === true && params.layerId === undefined)
       return failure(new BridgeError("INVALID_PARAMS", "includeHidden requires an explicit layerId."));
+    if (params.tagId !== undefined && params.frames !== undefined)
+      return failure(new BridgeError("INVALID_PARAMS", "Choose either tagId or frames, not both."));
     return call(method, params);
   }
 
@@ -152,6 +154,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { documentId, fromFrame: frame, toFrame: frame, scale, ...previewScope },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => scopedCall("render_frame_diff", params));
+  server.registerTool("libresprite_analyze_animation", {
+    description: "Read-only JSON loop/timing/motion measurements; no animated image or quality verdict. Omit frames/tagId for all forward, or choose 1-256 ordered frames (repeats allowed) OR native tagId (forward/reverse/pingpong without duplicated endpoints, up to510 steps). Returns cumulative millisecond exposure timeline, total/min/max/effective FPS, exact rendered nonzero-alpha bounds/occupancy centroids per unique frame, and added/removed/modified differences for every consecutive playback step. loop:true(default) also compares final playback step to first; loop:false omits closing transition. Reports boundary/internal change ratio (null when undefined), not a seamless-loop judgment or landmark tracking. GIF diagnostics flag delays<10ms and floor-to10ms shortening; APNG retains milliseconds. Optional layerId/includeHidden has isolated-preview semantics; includeHidden requires layerId. Max8,388,608 aggregate canvas pixels across UNIQUE frame analyses+UNIQUE directed comparisons; bounded cache. Works paused/inactive; idle GUI required. No files, GUI/mask/visibility/preferences/history/saved-state changes. Includes revision/session.",
+    inputSchema: { documentId, frames: z.array(frame).min(1).max(256).optional(), tagId: documentId.optional(), loop: z.boolean().default(true), ...previewScope },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, (params) => scopedCall("analyze_animation", params));
   server.registerTool("libresprite_list_assets", {
     description: "Browse one directory inside the connected editor's asset root without opening documents. Returns directories and PNG/.ase/.aseprite files, directories first then bytewise name order, with root-relative paths and file sizes. Nonrecursive; symlinks/special files/other formats are skipped. Offset pagination (1-100 per page); directories above 4096 total entries are refused. Available while paused; directory changes may shift offsets.",
     inputSchema: { path: relativePath.default("."), offset: z.number().int().min(0).max(4096).default(0), limit: z.number().int().min(1).max(100).default(50) },

@@ -18,7 +18,7 @@ from bridge_selection_cases import test_cels_and_selection
 from bridge_navigation_cases import test_navigation
 from bridge_animation_cases import test_animation_workflows
 from bridge_editing_cases import test_editing_workflows
-from bridge_inspection_cases import test_frame_differences, test_isolated_previews
+from bridge_inspection_cases import test_frame_differences, test_isolated_previews, test_animation_diagnostics
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -98,6 +98,7 @@ def main():
                 if options.inspection_only:
                     test_frame_differences(client, assets, SMOKE)
                     test_isolated_previews(client, assets, SMOKE)
+                    test_animation_diagnostics(client, assets, SMOKE)
                     return
                 if options.editing_only:
                     test_editing_workflows(client, assets, SMOKE)
@@ -113,6 +114,7 @@ def main():
                     return
                 test_frame_differences(client, assets, SMOKE)
                 test_isolated_previews(client, assets, SMOKE)
+                test_animation_diagnostics(client, assets, SMOKE)
                 test_animation_workflows(client, assets, SMOKE)
                 test_editing_workflows(client, assets, SMOKE)
                 document = client.request("create", {"width": 16, "height": 16, "name": "Live bridge test"})

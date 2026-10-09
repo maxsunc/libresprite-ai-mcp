@@ -114,14 +114,18 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **61 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **62 tools**, and limitations.
 
 Read-only frame differences highlight added/removed/modified rendered pixels
 and report exact counts, bounds, and occupancy centroids. Isolated layer/group
 previews, scoped differences/contact sheets and explicit renderer-only hidden
-content inspection are also available. See
+content inspection are also available. Loop/timing diagnostics report actual tag
+playback order, cumulative exposures, frame/transition measurements and GIF delay
+limitations without changing the animation. See
 [animation inspection](docs/animation-inspection.md). The approved v0.9.0 package
 has not been rebuilt; these source features require a new development editor.
+Use `node scripts/demo-inspection.mjs` for a separate generated review animation
+and saved inspection PNG/JSON results; it leaves its editor paused and open.
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.

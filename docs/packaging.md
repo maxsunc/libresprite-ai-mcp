@@ -5,6 +5,10 @@ published, notarized app release. Native-CI/Linux work was skipped at the user's
 request. Existing macOS/Ubuntu MCP/helper CI is unchanged. Binary publication and
 Developer ID signing/notarization require separate authorization.
 
+Examples below show the approved v0.9.0 package layout. The builder uses the
+current source version for new output names. v0.10.0 inspection features require
+a newly built editor/MCP pair; the existing local v0.9.0 package was not replaced.
+
 ## Build a package
 
 On native Apple Silicon macOS, install the prerequisites in [building.md](building.md),
@@ -123,8 +127,9 @@ Optional `doctor.sh --connect` reads native status and checks the bridge version
 It must not be used while an agent is actively editing: only one connection is
 allowed, and closing the diagnostic connection **pauses the editor**. This is an
 explicit opt-in side effect, never part of default diagnostics. It doesn't resume
-or retry operations. `--doctor` is CLI functionality, not another MCP tool; there
-are still 59 tools.
+or retry operations. `--doctor` is CLI functionality, not another MCP tool. The
+approved v0.9.0 package has 59 tools; see [the live guide](live-bridge.md) for the
+current source catalog.
 
 ```sh
 python3 "/path/to/package/verify-package.py"

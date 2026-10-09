@@ -129,6 +129,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_render` | Composite a frame to PNG image content |
 | `libresprite_render_frame_diff` | Exact visual frame differences with counts/bounds |
 | `libresprite_render_layer` | Isolated layer/group PNG, optional hidden-content preview |
+| `libresprite_analyze_animation` | Read-only playback-order loop/timing/GIF diagnostics |
 | `libresprite_list_assets` | Browse supported assets/directories inside the root |
 | `libresprite_preview_asset` | Render a file thumbnail without opening a GUI tab |
 | `libresprite_contact_sheet` | Read-only tiled animation preview with frame rectangles |
@@ -165,7 +166,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **61 tools** in server/bridge version **0.10.0**. Rebuild the editor
+There are **62 tools** in server/bridge version **0.10.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not

@@ -81,6 +81,57 @@ and `includeHidden`. Existing unscoped behavior and exports are unchanged. Conta
 sheet rectangles, zero-based source frames and durations label each tile in its
 returned manifest; no font/text is painted onto the pixel-art preview.
 
+## Loop and timing diagnostics
+
+Call `libresprite_analyze_animation` with `documentId` and optional:
+
+- `tagId`: expand a native tag's forward/reverse/pingpong playback order.
+- **Or** `frames`: 1–256 ordered zero-based indices; repeats/holds are allowed.
+- Neither: all sprite frames in forward order.
+- `loop`: true (default) includes the closing last-playback-step → first-step
+  comparison; false reports only internal transitions.
+- `layerId`/`includeHidden`: the same isolated-rendering scope as above.
+
+```json
+{ "documentId": 1, "tagId": 20, "layerId": 8, "loop": true }
+```
+
+The JSON-only result has `schema: libresprite-animation-analysis-v1`:
+
+- `steps`: exposure order with `step`, source `frame`, `durationMs`, inclusive
+  `startMs`/exclusive `endMs`, and floored `gifDurationMs`. Pingpong does not
+  duplicate endpoints; a 256-frame tag has at most 510 playback steps.
+- `timing`: step count, total/min/max durations, uniform-duration flag and
+  `effectiveFps` (1000 × step count / total milliseconds, not a fixed playback FPS).
+- `frames`: one entry per unique source frame, in first-appearance order, with
+  duration, nonzero-alpha pixel count, bounds and occupancy centroid.
+- `transitions`: consecutive **playback steps**, with source-frame/step IDs,
+  `closing` flag and the same exact `difference` measurements as frame diffs.
+- `loopBoundary`: the closing transition, or null when `loop: false`.
+- `transitionSummary`: internal change mean/max, identical transition count
+  (including closure when enabled), closing change count, and closing/internal-mean
+  ratio. Undefined means/ratios are null, not Infinity or fabricated zero.
+- `gif`: native GIF timing exportability and predicted total encoded duration/loss.
+  Delays below 10ms make exportability false and encoded totals null. Otherwise each
+  delay is floored to 10ms units. `warnings` identifies affected playback steps:
+  `GIF_DELAY_TOO_SHORT` or `GIF_DELAY_QUANTIZED`. This measures timing only, not
+  palette quantization, binary-alpha loss, or all export size/path constraints.
+
+A one-frame loop has one zero-change closing comparison; a one-frame non-loop has
+no comparisons. Duplicate poses are reported as identical even when their source
+indices differ. Tag loops compare the last **expanded playback step**, not blindly
+the tag's numeric last frame. Different endpoints are normal in moving cycles;
+neither a nonzero boundary difference nor uneven timing is a quality verdict.
+Centroid changes are occupancy measurements, not identified feet/joints/motion.
+
+Analysis is capped at 8,388,608 aggregate source-canvas pixels over **unique source
+frame analyses + unique directed frame-pair comparisons**. Both are cached, so a
+repeated frame sequence does not repeatedly render or scan the same pair. Oversized
+requests fail before allocating previews; choose fewer frames or a smaller canvas.
+The result reports `analyzedPixels`. Scope isolation does not reduce canvas size;
+large blank/hidden sprites still count toward the bound. No scaling/downsampling is
+used for diagnostics, and no output file is published.
+
 ## Verification
 
 ```sh
@@ -95,3 +146,6 @@ generated fixtures. It independently decodes PNGs and checks classifications,
 scaling, empty/reversed comparisons, input/output bounds and read-only state
 preservation, including a live redo branch. It never attaches to existing editors
 or opens personal artwork. Animation correction is a separate future milestone.
+
+For a visible, generated real-MCP demo and manual review, see
+[the v0.10.0 checklist](testing-v0.10.md).

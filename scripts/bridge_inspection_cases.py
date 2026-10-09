@@ -253,3 +253,128 @@ def test_isolated_previews(client, assets, smoke):
     client.request("set_paused", {"paused": False})
     edit("close_document", confirm=True)
     print("PASS: isolated indexed background retains the native opaque background/transparent-index semantics.")
+
+
+def test_animation_diagnostics(client, assets, smoke):
+    document = client.request("create", {"width": 4, "height": 4, "name": "Animation diagnostic tests"})
+    document_id, base = document["documentId"], document["layers"][0]["layerId"]
+
+    def current():
+        return canonical_inspection(client.request("inspect", {"documentId": document_id}))
+
+    def edit(method, **params):
+        return client.request(method, {"documentId": document_id, "expectedRevision": current()["revision"], **params})
+
+    def analyze(**params):
+        return client.request("analyze_animation", {"documentId": document_id, **params})
+
+    blue = {"r": 60, "g": 100, "b": 220, "a": 255}
+    red = {"r": 220, "g": 50, "b": 60, "a": 255}
+    edit("draw_stroke", layerId=base, frame=0, points=[{"x": 2, "y": 2}], color=blue)
+    edit("set_frame_duration", frame=0, durationMs=91)
+    for index, duration in ((1, 9), (2, 120), (3, 200)):
+        edit("add_frame", index=index, copyFrom=0, durationMs=duration)
+    group = edit("create_layer", name="Motion", type="group")["createdLayerId"]
+    moving = edit("create_layer", name="Moving", parentId=group)["createdLayerId"]
+    hidden = edit("create_layer", name="Hidden motion", parentId=group)["createdLayerId"]
+    for frame, (x, y) in enumerate(((0, 0), (1, 0), (3, 3), (0, 0))):
+        edit("draw_stroke", layerId=moving, frame=frame, points=[{"x": x, "y": y}], color=red)
+        edit("draw_stroke", layerId=hidden, frame=frame, points=[{"x": 3, "y": 0}], color=blue)
+    edit("update_layer", layerId=hidden, visible=False)
+    tags = {direction: edit("create_tag", name=direction, to=2, direction=direction, **{"from": 0})["createdTagId"] for direction in ("forward", "reverse", "pingpong")}
+    single = edit("create_tag", name="Single", to=1, **{"from": 1})["createdTagId"]
+    edit("set_bitmap_selection", x=0, y=0, width=2, height=2, bits="1001")
+    edit("draw_stroke", layerId=base, frame=0, points=[{"x": 0, "y": 3}], color=red)
+    edit("undo")
+    edit("save", path="inspection-diagnostics.ase")
+    before = current()
+    saved_bytes = (assets / "inspection-diagnostics.ase").read_bytes()
+    client.request("set_paused", {"paused": True})
+    result = analyze()
+    assert result["schema"] == "libresprite-animation-analysis-v1" and result["revision"] == before["revision"]
+    assert result["timing"]["totalDurationMs"] == 420 and result["timing"]["stepCount"] == 4
+    assert [step["startMs"] for step in result["steps"]] == [0, 91, 100, 220]
+    assert [step["endMs"] for step in result["steps"]] == [91, 100, 220, 420]
+    assert [warning["code"] for warning in result["warnings"]] == ["GIF_DELAY_QUANTIZED", "GIF_DELAY_TOO_SHORT"]
+    assert not result["gif"]["exportable"] and result["gif"]["encodedTotalDurationMs"] is None
+    assert result["loopBoundary"]["fromFrame"] == 3 and result["loopBoundary"]["toFrame"] == 0
+    assert result["loopBoundary"]["difference"]["changedPixels"] == 0
+    assert result["transitionSummary"] == {"internalTransitions": 3, "identicalTransitions": 1, "meanInternalChangedPixels": 2, "maxInternalChangedPixels": 2, "loopChangedPixels": 0, "loopToInternalMeanRatio": 0}
+    for transition in result["transitions"]:
+        diff = client.request("render_frame_diff", {"documentId": document_id, "fromFrame": transition["fromFrame"], "toFrame": transition["toFrame"]})
+        assert transition["difference"] == diff["difference"]
+    for item in result["frames"]:
+        assert item["visiblePixels"] == 2 and item["bounds"] is not None
+    for direction, order, duration in (("forward", [0, 1, 2], 220), ("reverse", [2, 1, 0], 220), ("pingpong", [0, 1, 2, 1], 229)):
+        tagged = analyze(tagId=tags[direction], layerId=group)
+        assert [step["frame"] for step in tagged["steps"]] == order and tagged["timing"]["totalDurationMs"] == duration
+        assert tagged["sequenceSource"] == "tag" and tagged["tagId"] == tags[direction]
+        assert tagged["loopBoundary"]["fromFrame"] == order[-1] and tagged["loopBoundary"]["toFrame"] == order[0]
+        for item in tagged["frames"]:
+            rendered = client.request("render_layer", {"documentId": document_id, "layerId": group, "frame": item["frame"]})
+            assert {key: item[key] for key in ("visiblePixels", "bounds", "centroid")} == rendered["analysis"]
+        for transition in tagged["transitions"]:
+            diff = client.request("render_frame_diff", {"documentId": document_id, "layerId": group, "fromFrame": transition["fromFrame"], "toFrame": transition["toFrame"]})
+            assert transition["difference"] == diff["difference"]
+    singleton = analyze(tagId=single)
+    assert len(singleton["steps"]) == len(singleton["transitions"]) == 1
+    assert singleton["loopBoundary"]["difference"]["changedPixels"] == 0
+    assert singleton["transitionSummary"]["loopToInternalMeanRatio"] is None
+    once = analyze(frames=[2, 0, 2], loop=False)
+    assert [step["frame"] for step in once["steps"]] == [2, 0, 2]
+    assert once["timing"]["totalDurationMs"] == 331 and once["loopBoundary"] is None
+    assert once["gif"]["encodedTotalDurationMs"] == 330 and once["gif"]["totalShorteningMs"] == 1
+    assert len(once["transitions"]) == 2 and not any(t["closing"] for t in once["transitions"])
+    single_once = analyze(frames=[0], loop=False)
+    assert single_once["transitions"] == [] and single_once["transitionSummary"]["meanInternalChangedPixels"] is None
+    repeated = analyze(frames=[0, 0, 1, 1, 0])
+    assert repeated["analyzedPixels"] == 16 * 6 and repeated["transitionSummary"]["identicalTransitions"] == 3
+    assert all(item["visiblePixels"] == 0 for item in analyze(layerId=hidden)["frames"])
+    assert all(item["visiblePixels"] == 1 for item in analyze(layerId=hidden, includeHidden=True)["frames"])
+    for params, code in (({"frames": []}, "INVALID_PARAMS"), ({"frames": [0], "tagId": tags["forward"]}, "INVALID_PARAMS"), ({"frames": [4]}, "INVALID_PARAMS"), ({"frames": [0] * 257}, "INVALID_PARAMS"), ({"includeHidden": True}, "INVALID_PARAMS"), ({"loop": "yes"}, "INVALID_PARAMS"), ({"tagId": 2147483647}, "TAG_NOT_FOUND"), ({"layerId": 2147483647}, "LAYER_NOT_FOUND"), ({"sessionId": "wrong"}, "SESSION_MISMATCH")):
+        client.request("analyze_animation", {"documentId": document_id, **params}, expected_error=code)
+    assert current() == before and (assets / "inspection-diagnostics.ase").read_bytes() == saved_bytes
+    client.request("set_paused", {"paused": False})
+    other = client.request("create", {"width": 1024, "height": 1024, "name": "Analysis work limits"})
+    other_id = other["documentId"]
+    for index in range(1, 5):
+        state = client.request("inspect", {"documentId": other_id})
+        client.request("add_frame", {"documentId": other_id, "expectedRevision": state["revision"], "index": index})
+    other_before = canonical_inspection(client.request("inspect", {"documentId": other_id}))
+    client.request("set_paused", {"paused": True})
+    assert analyze()["timing"] == result["timing"]  # Inactive reads.
+    assert client.request("list_documents")["activeDocumentId"] == other_id
+    client.request("analyze_animation", {"documentId": other_id}, expected_error="LIMIT_EXCEEDED")
+    bounded = client.request("analyze_animation", {"documentId": other_id, "frames": [0] * 256})
+    assert bounded["analyzedPixels"] == 2 * 1024 * 1024 and len(bounded["steps"]) == 256
+    assert len(bounded["frames"]) == 1 and bounded["frames"][0]["bounds"] is None
+    boundary = client.request("analyze_animation", {"documentId": other_id, "frames": [0, 1, 2, 3]})
+    assert boundary["analyzedPixels"] == 8 * 1024 * 1024
+    assert canonical_inspection(client.request("inspect", {"documentId": other_id})) == other_before
+    client.request("set_paused", {"paused": False})
+    saved = client.request("save", {"documentId": other_id, "expectedRevision": other_before["revision"], "path": "inspection-analysis-large.ase"})
+    client.request("close_document", {"documentId": other_id, "expectedRevision": saved["revision"], "confirm": True})
+    docs = client.request("list_documents")
+    if docs["activeDocumentId"] != document_id:
+        client.request("activate_document", {"documentId": document_id, "expectedRevision": before["revision"], "expectedActiveDocumentId": docs["activeDocumentId"]})
+    assert current() == before
+    edit("close_document", confirm=True)
+    print("PASS: exact cumulative timing/GIF diagnostics, forward/reverse/pingpong/tag/explicit/repeated/once/single-frame loop analysis, scoped metrics/diffs, cache/work ceilings and read-only state preservation.")
+
+    document = client.request("create", {"width": 1, "height": 1, "name": "Maximum tag diagnostics"})
+    document_id = document["documentId"]
+    for count in (1, 2, 4, 8, 16, 32, 64, 128):
+        edit("duplicate_frames", frames=list(range(count)), index=count)
+    tag = edit("create_tag", name="Full pingpong", to=255, direction="pingpong", **{"from": 0})["createdTagId"]
+    edit("save", path="inspection-analysis-max-tag.ase")
+    before = current()
+    client.request("set_paused", {"paused": True})
+    result = analyze(tagId=tag)
+    assert len(result["steps"]) == len(result["transitions"]) == 510
+    assert len(result["frames"]) == 256 and result["timing"]["totalDurationMs"] == 51000
+    assert [step["frame"] for step in result["steps"]] == list(range(256)) + list(range(254, 0, -1))
+    assert result["loopBoundary"]["fromFrame"] == 1 and result["loopBoundary"]["toFrame"] == 0
+    assert current() == before
+    client.request("set_paused", {"paused": False})
+    edit("close_document", confirm=True)
+    print("PASS: maximum 256-frame native pingpong tag expands to exactly 510 endpoint-unduplicated playback steps.")

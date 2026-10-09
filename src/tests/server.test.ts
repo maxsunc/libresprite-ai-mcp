@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 61);
+    assert.equal(tools.length, 62);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -94,6 +94,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["render_onion_skin", { documentId: 1, frame: 0, layerId: 1 }],
       ["render_frame_diff", { documentId: 1, fromFrame: 0, toFrame: 1 }],
       ["render_layer", { documentId: 1, layerId: 1, frame: 0 }],
+      ["analyze_animation", { documentId: 1, frames: [2, 0, 2] }],
       ["export_png", { ...target, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", frames: [2, 0], columns: 2 }],
       ["set_palette", { ...target, frame: 0, size: 2, entries: [{ index: 1, color: paint.color }] }],
@@ -127,7 +128,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
@@ -152,6 +153,8 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "export_sprite_sheet")?.params.overwrite, false);
     assert.equal(requests.find((item) => item.method === "create_tag")?.params.direction, "forward");
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.loop, true);
+    assert.equal(requests.find((item) => item.method === "analyze_animation")?.params.loop, true);
+    assert.equal(requests.find((item) => item.method === "analyze_animation")?.params.includeHidden, false);
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.scale, 1);
     assert.equal(requests.find((item) => item.method === "export_animation")?.params.overwrite, false);
     for (const method of ["set_pixels", "draw_shape", "draw_stroke", "flood_fill"]) assert.equal(requests.find((item) => item.method === method)?.params.respectSelection, false);
@@ -207,6 +210,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["contact_sheet", { documentId: 1, includeHidden: true }],
       ["render_layer", { documentId: 1, frame: 0 }],
       ["render_layer", { documentId: 1, layerId: 1, frame: 0, includeHidden: "yes" }],
+      ["analyze_animation", { documentId: 1, frames: [] }],
+      ["analyze_animation", { documentId: 1, tagId: 1, frames: [0] }],
+      ["analyze_animation", { documentId: 1, includeHidden: true }],
+      ["analyze_animation", { documentId: 1, loop: "yes" }],
       ["export_png", { documentId: 1, frame: 0, path: "art.png" }],
       ["export_sprite_sheet", { ...target, path: "sheet.png", columns: 17 }],
       ["set_palette", { ...target, frame: 0, size: 257 }],

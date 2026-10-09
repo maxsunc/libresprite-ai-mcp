@@ -119,3 +119,8 @@ native `renderLayer`, with ancestor visibility checks and indexed-background
 handling. `src/render/render.cpp`/`.h` add an explicit per-renderer visibility
 override, defaulting off; ordinary rendering is unchanged. These modified upstream
 renderer files retain their MIT copyright/license notices.
+
+The bridge also reuses native tag playback expansion for read-only loop/timing
+diagnostics, caches bounded unique rendered frames and directed comparisons under
+the document read lock, and measures exact exposure/GIF delays using the standalone
+analysis header. No native animation-editing or ordinary playback behavior changes.

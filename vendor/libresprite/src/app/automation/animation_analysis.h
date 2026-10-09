@@ -6,6 +6,9 @@
 #include "../../../../nlohmann/json.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace app { namespace automation {
 
@@ -65,5 +68,42 @@ struct FrameDifference {
             {"bounds", bounds.json()}, {"before", before.json()}, {"after", after.json()}};
   }
 };
+
+// Exposure order is supplied by the native tag/frame expansion, not inferred
+// from frame numbers. GIF uses the same floored centisecond delays as export.
+inline nlohmann::json animationTiming(const std::vector<std::pair<int, int>>& exposures) {
+  if (exposures.empty() || exposures.size() > 510)
+    throw std::invalid_argument("Provide 1 to 510 playback steps.");
+  nlohmann::json steps = nlohmann::json::array(), warnings = nlohmann::json::array();
+  int64_t total = 0, gifTotal = 0;
+  int minimum = 65535, maximum = 0;
+  bool gifExportable = true;
+  for (size_t i = 0; i < exposures.size(); ++i) {
+    int frame = exposures[i].first, duration = exposures[i].second;
+    if (frame < 0 || frame > 255 || duration < 1 || duration > 65535)
+      throw std::invalid_argument("Playback steps require frame0-255 and duration1-65535ms.");
+    int gifDuration = duration / 10 * 10;
+    steps.push_back({{"step", i}, {"frame", frame}, {"durationMs", duration},
+                     {"startMs", total}, {"endMs", total + duration}, {"gifDurationMs", gifDuration}});
+    if (duration < 10) {
+      gifExportable = false;
+      warnings.push_back({{"code", "GIF_DELAY_TOO_SHORT"}, {"step", i}, {"frame", frame}, {"durationMs", duration},
+                          {"message", "Native GIF export refuses delays below 10ms. APNG preserves this timing."}});
+    } else if (duration != gifDuration) {
+      warnings.push_back({{"code", "GIF_DELAY_QUANTIZED"}, {"step", i}, {"frame", frame},
+                          {"durationMs", duration}, {"gifDurationMs", gifDuration},
+                          {"message", "Native GIF export floors this delay to 10ms units; APNG preserves milliseconds."}});
+    }
+    total += duration; gifTotal += gifDuration;
+    minimum = std::min(minimum, duration); maximum = std::max(maximum, duration);
+  }
+  return {{"steps", steps}, {"warnings", warnings},
+          {"summary", {{"stepCount", exposures.size()}, {"totalDurationMs", total},
+                       {"minDurationMs", minimum}, {"maxDurationMs", maximum},
+                       {"uniformDurations", minimum == maximum}, {"effectiveFps", 1000.0 * exposures.size() / total}}},
+          {"gif", {{"exportable", gifExportable}, {"delayQuantumMs", 10},
+                   {"encodedTotalDurationMs", gifExportable ? nlohmann::json(gifTotal) : nlohmann::json(nullptr)},
+                   {"totalShorteningMs", gifExportable ? nlohmann::json(total - gifTotal) : nlohmann::json(nullptr)}}}};
+}
 
 }} // namespace app::automation

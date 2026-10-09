@@ -9,6 +9,13 @@
 - Isolated image-layer/nested-group PNG previews with native blend/opacity/palettes,
   optional scoped differences/contact sheets, and explicit hidden-content rendering.
   Visibility override is local to a renderer, never a temporary document mutation.
+- Loop/timing diagnostics expand native forward/reverse/pingpong tags or explicit
+  repeated frames, report exact exposure timelines and per-frame/transition
+  measurements (including loop closure), and flag GIF delay refusal/quantization.
+  Unique renders/comparisons are cached within an 8,388,608 aggregate-pixel budget.
+  Measurements are not a loop-quality verdict or tracked landmarks.
+- 62 MCP tools and a generated real-MCP inspection review demo/checklist. No
+  existing editors/artwork or the approved v0.9.0 package are replaced.
 - Native measurement unit tests, independent PNG comparisons and focused disposable
   GUI regressions. Animation correction and native-CI/Linux work remain out of scope.
 - The approved local v0.9.0 package remains unchanged; new native features require

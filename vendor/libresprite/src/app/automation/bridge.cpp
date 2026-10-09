@@ -5,6 +5,7 @@
 // Updated 2026-10-08: guarded canvas/layer operations, masks, brushes/index painting.
 // Updated 2026-10-09: read-only rendered frame differences and motion measurements.
 // Updated 2026-10-09: isolated layer/group previews without live visibility changes.
+// Updated 2026-10-09: bounded playback-order loop and millisecond timing diagnostics.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -967,6 +968,77 @@ private:
       for (auto frame : params["frames"]) frames.push_back(integer({{"frame", frame}}, "frame", 0, sprite->lastFrame()));
     } else for (int frame = 0; frame < sprite->totalFrames(); ++frame) frames.push_back(frame);
     return frames;
+  }
+  Json analyzeAnimation(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto frames = animationFrames(sprite, params);
+    auto scope = previewScope(sprite, params);
+    bool loop = params.contains("loop") ? boolean(params, "loop") : true;
+    std::vector<int> unique;
+    for (int frame : frames)
+      if (std::find(unique.begin(), unique.end(), frame) == unique.end()) unique.push_back(frame);
+    std::map<std::pair<int, int>, Json> comparisons;
+    for (size_t i = 1; i < frames.size(); ++i) comparisons[{frames[i - 1], frames[i]}] = nullptr;
+    if (loop) comparisons[{frames.back(), frames.front()}] = nullptr;
+    size_t pixels = size_t(sprite->width()) * sprite->height();
+    require(pixels <= MaxPixels && pixels * (unique.size() + comparisons.size()) <= MaxAnimationPixels,
+            "LIMIT_EXCEEDED", "Analysis exceeds 8,388,608 aggregate unique frame/transition pixels. Use fewer frames or a smaller canvas.");
+    // Validate/fingerprint under the same read lock before allocating previews.
+    auto result = previewMetadata(document);
+    std::vector<std::pair<int, int>> exposures;
+    for (int frame : frames) exposures.push_back({frame, sprite->frameDuration(frame)});
+    auto timing = automation::animationTiming(exposures);
+    result["schema"] = "libresprite-animation-analysis-v1";
+    scopeMetadata(result, scope);
+    result["loop"] = loop;
+    result["tagId"] = params.contains("tagId") ? params["tagId"] : Json(nullptr);
+    result["sequenceSource"] = params.contains("tagId") ? "tag" : params.contains("frames") ? "frames" : "all";
+    result["steps"] = timing["steps"]; result["timing"] = timing["summary"];
+    result["gif"] = timing["gif"]; result["warnings"] = timing["warnings"];
+    result["analyzedPixels"] = pixels * (unique.size() + comparisons.size());
+    result["frames"] = Json::array();
+    std::map<int, ImageRef> images;
+    for (int frame : unique) {
+      auto image = scopedComposite(sprite, frame, scope);
+      automation::FrameAnalysis analysis;
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x) analysis.add(x, y, image->getPixel(x, y));
+      auto item = analysis.json();
+      item["frame"] = frame; item["durationMs"] = sprite->frameDuration(frame);
+      result["frames"].push_back(item);
+      images[frame] = image;
+    }
+    for (auto& item : comparisons) {
+      automation::FrameDifference difference;
+      auto before = images.at(item.first.first), after = images.at(item.first.second);
+      for (int y = 0; y < sprite->height(); ++y)
+        for (int x = 0; x < sprite->width(); ++x)
+          difference.add(x, y, before->getPixel(x, y), after->getPixel(x, y));
+      item.second = difference.json();
+    }
+    result["transitions"] = Json::array();
+    double internalTotal = 0;
+    uint64_t internalMaximum = 0;
+    size_t identical = 0;
+    auto append = [&](size_t from, size_t to, bool closing) {
+      const auto& difference = comparisons.at({frames[from], frames[to]});
+      uint64_t changed = difference["changedPixels"].get<uint64_t>();
+      if (!changed) ++identical;
+      if (!closing) { internalTotal += changed; internalMaximum = std::max(internalMaximum, changed); }
+      result["transitions"].push_back({{"fromStep", from}, {"toStep", to}, {"fromFrame", frames[from]},
+                                       {"toFrame", frames[to]}, {"closing", closing}, {"difference", difference}});
+    };
+    for (size_t i = 1; i < frames.size(); ++i) append(i - 1, i, false);
+    if (loop) append(frames.size() - 1, 0, true);
+    result["loopBoundary"] = loop ? result["transitions"].back() : Json(nullptr);
+    double mean = frames.size() > 1 ? internalTotal / (frames.size() - 1) : 0;
+    Json boundary = loop ? result["loopBoundary"]["difference"]["changedPixels"] : Json(nullptr);
+    result["transitionSummary"] = {{"internalTransitions", frames.size() - 1}, {"identicalTransitions", identical},
+                                    {"meanInternalChangedPixels", frames.size() > 1 ? Json(mean) : Json(nullptr)},
+                                    {"maxInternalChangedPixels", frames.size() > 1 ? Json(internalMaximum) : Json(nullptr)},
+                                    {"loopChangedPixels", boundary},
+                                    {"loopToInternalMeanRatio", loop && mean > 0 ? Json(boundary.get<double>() / mean) : Json(nullptr)}};
+    return result;
   }
   std::vector<uint8_t> encodeGif(Sprite* sprite, bool loop) {
     std::unique_ptr<Document> detached(new Document(sprite));
@@ -2107,7 +2179,7 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
     if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.10.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
@@ -2132,7 +2204,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -2164,6 +2236,7 @@ private:
       if (method == "render_selection") return renderSelection(document, params);
       if (method == "render_frame_diff") return renderFrameDiff(document, params);
       if (method == "render_layer") return renderLayerPreview(document, params);
+      if (method == "analyze_animation") return analyzeAnimation(document, params);
       return renderFrame(document, params);
     }
     if (method == "activate_document") return activateDocument(document, params);

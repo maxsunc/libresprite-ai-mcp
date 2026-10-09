@@ -26,6 +26,13 @@ class AnimationAnalysisTest(unittest.TestCase):
 #include <iostream>
 int main() {
   nlohmann::json input; std::cin >> input;
+  if (input.contains("exposures")) {
+    std::vector<std::pair<int, int>> exposures;
+    for (const auto& item : input["exposures"]) exposures.push_back({item[0], item[1]});
+    try { std::cout << app::automation::animationTiming(exposures).dump(); }
+    catch (const std::invalid_argument& error) { std::cout << nlohmann::json{{"error", error.what()}}.dump(); }
+    return 0;
+  }
   app::automation::FrameDifference difference;
   nlohmann::json pixels = nlohmann::json::array();
   int width = input["width"], height = input["height"];
@@ -88,3 +95,44 @@ int main() {
                 self.assertEqual(diff[key], value)
             self.assertEqual(diff["changedPixels"], len(changed))
             self.assertEqual(diff["bounds"], {"x": min(x for x, y in changed), "y": min(y for x, y in changed), "width": max(x for x, y in changed) - min(x for x, y in changed) + 1, "height": max(y for x, y in changed) - min(y for x, y in changed) + 1})
+
+    def timing(self, exposures):
+        result = subprocess.run([str(self.executable)], input=json.dumps({"exposures": exposures}), check=True, capture_output=True, text=True)
+        return json.loads(result.stdout)
+
+    def test_ordered_repeated_exposures_and_exact_timeline(self):
+        result = self.timing([[2, 90], [0, 20], [1, 60], [0, 20]])
+        self.assertEqual([step["frame"] for step in result["steps"]], [2, 0, 1, 0])
+        self.assertEqual([step["startMs"] for step in result["steps"]], [0, 90, 110, 170])
+        self.assertEqual([step["endMs"] for step in result["steps"]], [90, 110, 170, 190])
+        self.assertEqual(result["summary"]["totalDurationMs"], 190)
+        self.assertEqual(result["summary"]["minDurationMs"], 20)
+        self.assertEqual(result["summary"]["maxDurationMs"], 90)
+        self.assertAlmostEqual(result["summary"]["effectiveFps"], 4000 / 190)
+        self.assertFalse(result["summary"]["uniformDurations"])
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(result["gif"]["encodedTotalDurationMs"], 190)
+
+    def test_gif_quantization_and_unexportable_short_delays(self):
+        result = self.timing([[0, 91], [1, 119]])
+        self.assertEqual(result["gif"], {"exportable": True, "delayQuantumMs": 10, "encodedTotalDurationMs": 200, "totalShorteningMs": 10})
+        self.assertEqual([item["code"] for item in result["warnings"]], ["GIF_DELAY_QUANTIZED"] * 2)
+        result = self.timing([[0, 1], [1, 9], [2, 10], [3, 65535]])
+        self.assertFalse(result["gif"]["exportable"])
+        self.assertIsNone(result["gif"]["encodedTotalDurationMs"])
+        self.assertIsNone(result["gif"]["totalShorteningMs"])
+        self.assertEqual([item["code"] for item in result["warnings"]], ["GIF_DELAY_TOO_SHORT", "GIF_DELAY_TOO_SHORT", "GIF_DELAY_QUANTIZED"])
+        self.assertEqual([step["gifDurationMs"] for step in result["steps"]], [0, 0, 10, 65530])
+
+    def test_single_uniform_and_maximum_playback_timing(self):
+        result = self.timing([[0, 100]])
+        self.assertTrue(result["summary"]["uniformDurations"])
+        self.assertEqual(result["summary"]["effectiveFps"], 10)
+        result = self.timing([[255, 65535]] * 510)
+        self.assertEqual(result["summary"]["totalDurationMs"], 65535 * 510)
+        self.assertEqual(result["steps"][-1]["endMs"], 65535 * 510)
+
+    def test_timing_input_bounds(self):
+        for exposures in ([], [[0, 100]] * 511, [[0, 0]], [[0, 65536]], [[-1, 100]], [[256, 100]]):
+            with self.subTest(exposures=exposures[:2]):
+                self.assertIn("error", self.timing(exposures))
