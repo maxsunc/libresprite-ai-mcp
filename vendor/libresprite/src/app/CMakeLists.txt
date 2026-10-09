@@ -1,5 +1,6 @@
 # Modified by LibreSprite AI MCP contributors, 2026-10-01: bridge/APNG build integration.
 # Modification notice added 2026-10-08; original upstream notices below are retained.
+# Modified 2026-10-08: include native undoable frame permutation command.
 # Aseprite     | Copyright (C) 2001-2016  David Capello
 # LibreSprite  | Copyright (C)      2021  LibreSprite contributors
 
@@ -461,6 +462,7 @@ add_library(app-lib
   ui_context.cpp
   automation/bridge.cpp
   automation/apng.cpp
+  automation/reorder_frames.cpp
   util/autocrop.cpp
   util/clipboard.cpp
   util/clipboard_native.cpp

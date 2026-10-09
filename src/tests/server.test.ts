@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 45);
+    assert.equal(tools.length, 51);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -102,6 +102,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["activate_document", { ...target, expectedActiveDocumentId: null }],
       ["set_active_site", { ...target, layerId: 1, frame: 0 }],
       ["close_document", { ...target, confirm: true }],
+      ["copy_cel", { ...target, layerId: 1, frame: 0, sourceLayerId: 2, sourceFrame: 1 }],
+      ["duplicate_frames", { ...target, frames: [2, 0], index: 256 }],
+      ["reorder_frames", { ...target, order: [2, 0, 1] }],
+      ["edit_cels", { ...target, edits: [{ layerId: 1, frame: 0, x: -32768, opacity: 0, operation: "rotate_cw" }] }],
+      ["set_frame_durations", { ...target, durations: [{ frame: 0, durationMs: 65535 }, { frame: 1, durationMs: 1 }] }],
+      ["transform_selection", { ...target, layerId: 1, frames: [0, 2], operation: "flip_vertical" }],
     ] as const;
     for (const [method, args] of valid) {
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
@@ -136,6 +142,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "render_selection")?.params.mode, "overlay");
     assert.equal(requests.find((item) => item.method === "render_selection")?.params.opacity, 96);
     assert.equal(requests.find((item) => item.method === "translate_selection")?.params.copy, false);
+    assert.equal(requests.find((item) => item.method === "copy_cel")?.params.overwrite, false);
     const selectionAware = await client.callTool({ name: "libresprite_draw_stroke", arguments: { ...paint, points: [{ x: 1, y: 2 }], respectSelection: true } });
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
@@ -176,6 +183,16 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["set_active_site", { ...target, layerId: 0 }],
       ["close_document", { ...target }],
       ["close_document", { ...target, confirm: false }],
+      ["copy_cel", { ...target, layerId: 1, frame: 0, sourceLayerId: 1 }],
+      ["copy_cel", { ...target, layerId: 1, frame: 0, sourceLayerId: 1, sourceFrame: 256 }],
+      ["duplicate_frames", { ...target, frames: [], index: 0 }],
+      ["duplicate_frames", { ...target, frames: [0], index: 257 }],
+      ["reorder_frames", { ...target, order: [-1] }],
+      ["edit_cels", { ...target, edits: [] }],
+      ["edit_cels", { ...target, edits: [{ layerId: 1, frame: 0, x: 32768 }] }],
+      ["edit_cels", { ...target, edits: [{ layerId: 1, frame: 0, operation: "rotate_45" }] }],
+      ["set_frame_durations", { ...target, durations: [{ frame: 0, durationMs: 0 }] }],
+      ["transform_selection", { ...target, layerId: 1, frames: [], operation: "rotate_cw" }],
       ["draw_stroke", { ...paint, points: [{ x: 0, y: 0 }], respectSelection: "yes" }],
     ] as const;
     for (const [method, args] of rejected) {

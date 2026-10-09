@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.6.0.** This is an independent development project, not an
+**Source alpha — v0.7.0.** This is an independent development project, not an
 official LibreSprite release. It requires building the custom editor; a stock
 LibreSprite installation does not contain this bridge. No prebuilt app bundle
 is currently provided.
@@ -79,11 +79,14 @@ undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
 frames and timing, undo/redo, and native save.
 Cel position/opacity, flips/quarter-turns, explicit unlinking, native selection
 masks, selection-aware drawing, and overlap-safe selection moves/copies are supported.
+Whole-cel copy between existing layers/frames, ordered frame-range duplication,
+tag-safe frame reordering, atomic cel/timing batches, and selected-region
+flips/rotations across explicit frames are also available.
 
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **45 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **51 tools**, and limitations.
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.
@@ -125,16 +128,18 @@ editing important artwork.
 
 ## Next priorities
 
-1. Cel copy/paste and guarded multi-frame animation workflows.
-2. Remaining editing gaps: canvas operations, richer selections/layers/brushes.
-3. Easier installation and reproducible Apple Silicon application packaging.
-4. Automated native builds/regressions and validated Linux support.
+1. Remaining editing gaps: canvas operations, richer selections/layers/brushes.
+2. Easier installation and reproducible Apple Silicon application packaging.
+3. Automated native builds/regressions and validated Linux support.
 
-The v0.6.0 user-control/navigation milestone is ready for manual review. Run
-`node scripts/demo-navigation.mjs` for a separate editor with generated, saved
-test sprites and a connected pause-button monitor. See
-[the step 1 test checklist](docs/testing-v0.6.md). Subsequent milestones should
-wait until this review is approved.
+The v0.6.0 user-control/navigation milestone was reviewed and approved. The
+v0.7.0 animation-workflow milestone is next for manual review. Run
+`node scripts/demo-animation.mjs` for a separate editor with a generated saved
+five-frame animation and a connected pause-button monitor. One native Undo
+removes the entire final multi-frame cel batch. See
+[the step 2 test checklist](docs/testing-v0.7.md). Subsequent milestones should
+wait until this review is approved. The earlier
+[step 1 checklist](docs/testing-v0.6.md) and demo remain available.
 
 See [the development milestones](CHANGELOG.md) for what is already implemented.
 Bug reports and focused contributions are welcome through the

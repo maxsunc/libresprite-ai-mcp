@@ -1,11 +1,14 @@
 // LibreSprite AI MCP: created 2026-10-01; license notice clarified 2026-10-08.
 // Distributed under GNU GPL version 2 only (GPL-2.0-only); see the root LICENSE.
 // Updated 2026-10-08: visible user controls and guarded document/site navigation.
+// Updated 2026-10-08: independent cel copies and atomic animation-range editing.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
 #include "app/automation/apng.h"
+#include "app/automation/reorder_frames.h"
+#include "app/automation/revision_metadata.h"
 #include "app/cmd/add_cel.h"
 #include "app/cmd/add_frame_tag.h"
 #include "app/cmd/add_layer.h"
@@ -16,6 +19,7 @@
 #include "app/cmd/remove_layer.h"
 #include "app/cmd/remove_frame_tag.h"
 #include "app/cmd/remove_palette.h"
+#include "app/cmd/remove_cel.h"
 #include "app/cmd/replace_image.h"
 #include "app/cmd/set_cel_opacity.h"
 #include "app/cmd/set_cel_position.h"
@@ -424,7 +428,12 @@ private:
     // Fingerprint native state AND image bytes: catches ordinary manual edits,
     // undo/redo, palette changes, and script writes that bypass undo commands.
     SHA1Context hash; SHA1Reset(&hash);
-    std::string encoded = metadata.dump() + std::to_string(reinterpret_cast<uintptr_t>(document->undoHistory()->currentState()));
+    // Upstream crash::Writer::saveObject initializes zero versions to one in
+    // its background recovery pass, even for unchanged layers/images. Treat
+    // ONLY that initial bookkeeping transition as equivalent. Higher counters,
+    // actual properties/pixel bytes, IDs, and undo state still detect edits.
+    auto fingerprintMetadata = automation::revisionMetadata(metadata);
+    std::string encoded = fingerprintMetadata.dump() + std::to_string(reinterpret_cast<uintptr_t>(document->undoHistory()->currentState()));
     SHA1Input(&hash, reinterpret_cast<const uint8_t*>(encoded.data()), unsigned(encoded.size()));
     std::vector<Image*> images;
     document->sprite()->getImages(images);
@@ -968,6 +977,211 @@ private:
     independentImage(document->sprite(), target->cel(integer(params, "frame", 0, document->sprite()->lastFrame())));
     return target;
   }
+  size_t imageBytes(const Image* image) { return size_t(image->getRowStrideSize()) * image->height(); }
+  size_t spriteBytes(Sprite* sprite) {
+    std::vector<Image*> images; sprite->getImages(images);
+    size_t bytes = 0;
+    for (auto image : images) bytes += imageBytes(image);
+    return bytes;
+  }
+  std::vector<int> uniqueFrames(Sprite* sprite, const Json& params, const char* key = "frames") {
+    require(params.contains(key) && params[key].is_array() && !params[key].empty() && params[key].size() <= 256, "INVALID_PARAMS", "Supply 1 to 256 unique frame indices.");
+    std::vector<int> frames;
+    for (auto value : params[key]) {
+      int frame = integer({{"frame", value}}, "frame", 0, sprite->lastFrame());
+      require(std::find(frames.begin(), frames.end(), frame) == frames.end(), "INVALID_PARAMS", "Frame indices must be unique.");
+      frames.push_back(frame);
+    }
+    return frames;
+  }
+  std::shared_ptr<Cel> rawCelCopy(const std::shared_ptr<Cel>& source, int frame) {
+    auto copy = Cel::createCopy(source);
+    copy->setFrame(frame);
+    copy->data()->setUserData(source->data()->userData());
+    return copy;
+  }
+  Json copyCel(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto source = findLayer(sprite, integer(params, "sourceLayerId", 1, INT32_MAX));
+    require(source->isImage(), "UNSUPPORTED_LAYER", "Cel copy source must be an image layer.");
+    int from = integer(params, "sourceFrame", 0, sprite->lastFrame());
+    auto cel = source->cel(from);
+    require(bool(cel), "CEL_NOT_FOUND", "Source cel is missing; copying empty frames is not an erase operation.");
+    auto target = celLayer(document, params);
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    bool overwrite = params.contains("overwrite") ? boolean(params, "overwrite") : false;
+    if (source == target && from == frame) return {{"copied", false}};
+    auto previous = target->cel(frame);
+    independentImage(sprite, previous);
+    require(!previous || overwrite, "CEL_EXISTS", "Destination cel exists. Explicitly allow replacement with overwrite:true.");
+    require(sprite->pixelFormat() != IMAGE_INDEXED || sprite->palette(from)->countDiff(*sprite->palette(frame), nullptr, nullptr) == 0,
+            "UNSUPPORTED_PALETTES", "Indexed cel copies require identical source/destination palettes. Silent remapping is refused.");
+    size_t predicted = spriteBytes(sprite) + imageBytes(cel->image()) - (previous ? imageBytes(previous->image()) : 0);
+    require(predicted <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Independent cel copy exceeds the 32 MiB working limit.");
+    auto copied = rawCelCopy(cel, frame);
+    Transaction transaction(UIContext::instance(), "AI copy cel");
+    if (previous) transaction.execute(new cmd::RemoveCel(previous));
+    transaction.execute(new cmd::AddCel(target, copied));
+    finish(transaction, document);
+    UIContext::instance()->activeEditor()->setLayer(target);
+    UIContext::instance()->activeEditor()->setFrame(frame);
+    return {{"copied", true}, {"sourceLayerId", source->id()}, {"sourceFrame", from}, {"destinationFrame", frame}};
+  }
+  Json duplicateFrames(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto frames = uniqueFrames(sprite, params);
+    int index = integer(params, "index", 0, sprite->totalFrames());
+    require(sprite->totalFrames() + frames.size() <= 256, "LIMIT_EXCEEDED", "Duplication exceeds the 256-frame limit.");
+    require(sprite->getPalettes().size() == 1, "UNSUPPORTED_PALETTES", "Frame duplication with palette keyframes is not supported.");
+    size_t copiedBytes = 0;
+    for (auto layer : sprite->layers()) {
+      editable(layer);
+      if (layer->isImage()) for (int frame : frames) if (auto cel = layer->cel(frame)) copiedBytes += imageBytes(cel->image());
+    }
+    // Reserve a native background insertion scratch canvas too, if applicable.
+    size_t scratch = sprite->backgroundLayer() ? size_t(sprite->width()) * sprite->height() * 4 : 0;
+    require(spriteBytes(sprite) + copiedBytes + scratch <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Frame copies/scratch exceed the 32 MiB working limit.");
+    struct Copy { Layer* layer; std::shared_ptr<Cel> cel; };
+    std::vector<Copy> copies;
+    std::vector<int> durations;
+    // Snapshot every source BEFORE insertion shifts indices; never copy from a
+    // newly inserted frame or silently preserve links/continuous preferences.
+    for (size_t i = 0; i < frames.size(); ++i) {
+      durations.push_back(sprite->frameDuration(frames[i]));
+      for (auto layer : sprite->layers()) if (layer->isImage()) if (auto cel = layer->cel(frames[i]))
+        copies.push_back({layer, rawCelCopy(cel, index + i)});
+    }
+    Transaction transaction(UIContext::instance(), "AI duplicate frame range");
+    auto api = document->getApi(transaction);
+    for (size_t i = 0; i < frames.size(); ++i) {
+      api.addEmptyFrame(sprite, index + i);
+      transaction.execute(new cmd::SetFrameDuration(sprite, index + i, durations[i]));
+    }
+    for (auto& copy : copies) {
+      if (auto blank = copy.layer->cel(copy.cel->frame())) transaction.execute(new cmd::RemoveCel(blank));
+      transaction.execute(new cmd::AddCel(copy.layer, copy.cel));
+    }
+    finish(transaction, document);
+    UIContext::instance()->activeEditor()->setFrame(index);
+    return {{"insertedFrom", index}, {"insertedCount", frames.size()}, {"sourceFrames", frames}};
+  }
+  Json reorderFrames(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto order = uniqueFrames(sprite, params, "order");
+    require(order.size() == size_t(sprite->totalFrames()), "INVALID_PARAMS", "order must include every current frame exactly once (new index -> old index).");
+    require(sprite->getPalettes().size() == 1, "UNSUPPORTED_PALETTES", "Frame reordering with palette keyframes is not supported.");
+    for (auto layer : sprite->layers()) editable(layer);
+    std::vector<int> inverse(order.size());
+    bool changed = false;
+    for (size_t i = 0; i < order.size(); ++i) { inverse[order[i]] = i; changed |= order[i] != int(i); }
+    struct TagRange { FrameTag* tag; int from, to; };
+    std::vector<TagRange> ranges;
+    for (auto tag : sprite->frameTags()) {
+      int from = sprite->totalFrames(), to = -1;
+      require(tag->fromFrame() >= 0 && tag->toFrame() <= sprite->lastFrame() && tag->fromFrame() <= tag->toFrame(), "INVALID_PARAMS", "Invalid tag range.");
+      for (int i = tag->fromFrame(); i <= tag->toFrame(); ++i) { from = std::min(from, inverse[i]); to = std::max(to, inverse[i]); }
+      require(to - from == tag->toFrame() - tag->fromFrame(), "TAG_SPLIT", "Reorder would split a tag's original frames into disjoint ranges. Update/remove that tag explicitly first.");
+      ranges.push_back({tag, from, to});
+    }
+    if (!changed) return {{"reordered", false}, {"order", order}};
+    auto editor = UIContext::instance()->activeEditor();
+    int frame = inverse[editor->frame()];
+    Transaction transaction(UIContext::instance(), "AI reorder frames");
+    transaction.execute(new automation::ReorderFrames(sprite, order));
+    for (const auto& range : ranges) if (range.from != range.tag->fromFrame() || range.to != range.tag->toFrame())
+      transaction.execute(new cmd::SetFrameTagRange(range.tag, range.from, range.to));
+    finish(transaction, document);
+    editor->setFrame(frame);
+    return {{"reordered", true}, {"order", order}, {"oldToNew", inverse}};
+  }
+  std::string transformOperation(const Json& params) {
+    auto operation = text(params, "operation", 32);
+    require(operation == "flip_horizontal" || operation == "flip_vertical" || operation == "rotate_cw" || operation == "rotate_ccw" || operation == "rotate_180", "INVALID_PARAMS", "Choose an exact flip/quarter-turn/180-degree transform.");
+    return operation;
+  }
+  gfx::Point transformedPoint(int x, int y, int w, int h, const std::string& operation) {
+    if (operation == "flip_horizontal") return gfx::Point(w - 1 - x, y);
+    if (operation == "flip_vertical") return gfx::Point(x, h - 1 - y);
+    if (operation == "rotate_cw") return gfx::Point(h - 1 - y, x);
+    if (operation == "rotate_ccw") return gfx::Point(y, w - 1 - x);
+    return gfx::Point(w - 1 - x, h - 1 - y);
+  }
+  ImageRef transformedImage(const Image* image, const std::string& operation) {
+    require(image->width() <= 1024 && image->height() <= 1024, "LIMIT_EXCEEDED", "Whole-cel transforms support image bounds of at most 1024x1024.");
+    bool quarter = operation == "rotate_cw" || operation == "rotate_ccw";
+    ImageRef result(Image::create(image->pixelFormat(), quarter ? image->height() : image->width(), quarter ? image->width() : image->height()));
+    result->setMaskColor(image->maskColor());
+    for (int y = 0; y < image->height(); ++y) for (int x = 0; x < image->width(); ++x) {
+      auto p = transformedPoint(x, y, image->width(), image->height(), operation);
+      result->putPixel(p.x, p.y, image->getPixel(x, y));
+    }
+    return result;
+  }
+  Json editCels(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    require(params.contains("edits") && params["edits"].is_array() && !params["edits"].empty() && params["edits"].size() <= 256, "INVALID_PARAMS", "Supply 1 to 256 explicit cel edits.");
+    struct Edit { std::shared_ptr<Cel> cel; int x, y, opacity; std::string operation; ImageRef image; };
+    std::vector<Edit> edits;
+    size_t scratch = 0;
+    for (const auto& entry : params["edits"]) {
+      auto layer = celLayer(document, entry);
+      int frame = integer(entry, "frame", 0, sprite->lastFrame());
+      auto cel = layer->cel(frame);
+      require(bool(cel), "CEL_NOT_FOUND", "Every batch target must have an existing cel.");
+      for (const auto& edit : edits) require(edit.cel != cel, "INVALID_PARAMS", "Each layer/frame can occur only once per batch.");
+      require(entry.contains("x") || entry.contains("y") || entry.contains("opacity") || entry.contains("operation"), "INVALID_PARAMS", "Each cel edit needs x, y, opacity, and/or operation.");
+      Edit edit{cel, entry.contains("x") ? integer(entry, "x", -32768, 32767) : cel->x(),
+                entry.contains("y") ? integer(entry, "y", -32768, 32767) : cel->y(),
+                entry.contains("opacity") ? integer(entry, "opacity", 0, 255) : cel->opacity(), "", {}};
+      if (entry.contains("operation")) {
+        edit.operation = transformOperation(entry);
+        independentImage(sprite, cel);
+        require(cel->image()->width() <= 1024 && cel->image()->height() <= 1024, "LIMIT_EXCEEDED", "Batch transforms support cel bounds up to 1024x1024.");
+        scratch += imageBytes(cel->image());
+      }
+      edits.push_back(std::move(edit));
+    }
+    require(scratch <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Batch transform scratch exceeds 32 MiB.");
+    bool changed = false;
+    for (auto& edit : edits) {
+      if (!edit.operation.empty()) {
+        edit.image = transformedImage(edit.cel->image(), edit.operation);
+        if (edit.image->size() == edit.cel->image()->size() && doc::count_diff_between_images(edit.image.get(), edit.cel->image()) == 0) edit.image.reset();
+      }
+      changed |= bool(edit.image) || edit.x != edit.cel->x() || edit.y != edit.cel->y() || edit.opacity != edit.cel->opacity();
+    }
+    if (!changed) return {{"editedCels", 0}};
+    Transaction transaction(UIContext::instance(), "AI atomic cel batch");
+    int count = 0;
+    for (auto& edit : edits) {
+      bool differs = bool(edit.image) || edit.x != edit.cel->x() || edit.y != edit.cel->y() || edit.opacity != edit.cel->opacity();
+      if (!differs) continue;
+      ++count;
+      if (edit.image) transaction.execute(new cmd::ReplaceImage(sprite, edit.cel->imageRef(), edit.image));
+      if (edit.x != edit.cel->x() || edit.y != edit.cel->y()) transaction.execute(new cmd::SetCelPosition(edit.cel, edit.x, edit.y));
+      if (edit.opacity != edit.cel->opacity()) transaction.execute(new cmd::SetCelOpacity(edit.cel, edit.opacity));
+    }
+    finish(transaction, document);
+    return {{"editedCels", count}};
+  }
+  Json frameDurations(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    require(params.contains("durations") && params["durations"].is_array() && !params["durations"].empty() && params["durations"].size() <= 256, "INVALID_PARAMS", "Supply 1 to 256 frame/duration pairs.");
+    std::vector<std::pair<int, int>> durations;
+    int count = 0;
+    for (const auto& entry : params["durations"]) {
+      int frame = integer(entry, "frame", 0, sprite->lastFrame()), duration = integer(entry, "durationMs", 1, 65535);
+      for (auto other : durations) require(other.first != frame, "INVALID_PARAMS", "Each frame can occur only once per timing batch.");
+      durations.push_back({frame, duration});
+      if (sprite->frameDuration(frame) != duration) ++count;
+    }
+    if (!count) return {{"editedDurations", 0}};
+    Transaction transaction(UIContext::instance(), "AI atomic frame timing");
+    for (auto pair : durations) if (sprite->frameDuration(pair.first) != pair.second)
+      transaction.execute(new cmd::SetFrameDuration(sprite, pair.first, pair.second));
+    finish(transaction, document);
+    return {{"editedDurations", count}};
+  }
   void editCel(Document* document, const Json& params, const std::string& method) {
     auto sprite = document->sprite();
     auto target = celLayer(document, params, method == "unlink_cel");
@@ -998,26 +1212,9 @@ private:
       return;
     }
     independentImage(sprite, cel);
-    auto operation = text(params, "operation", 32);
-    require(operation == "flip_horizontal" || operation == "flip_vertical" || operation == "rotate_cw" || operation == "rotate_ccw" || operation == "rotate_180", "INVALID_PARAMS", "Choose a horizontal/vertical flip or a clockwise/counterclockwise/180-degree rotation.");
+    auto operation = transformOperation(params);
     auto image = cel->image();
-    require(image->width() <= 1024 && image->height() <= 1024, "LIMIT_EXCEEDED", "Whole-cel transforms support image bounds of at most 1024x1024, including off-canvas pixels.");
-    bool quarter = operation == "rotate_cw" || operation == "rotate_ccw";
-    ImageRef transformed(Image::create(image->pixelFormat(), quarter ? image->height() : image->width(), quarter ? image->width() : image->height()));
-    transformed->setMaskColor(image->maskColor());
-    if (operation == "flip_horizontal" || operation == "flip_vertical") {
-      doc::copy_image(transformed.get(), image, 0, 0);
-      doc::algorithm::flip_image(transformed.get(), transformed->bounds(), operation == "flip_horizontal" ? doc::algorithm::FlipHorizontal : doc::algorithm::FlipVertical);
-    } else {
-      // Exact integer pixel permutation: no interpolation, centering, canvas
-      // clipping, palette remapping, selection mask, or metadata replacement.
-      for (int y = 0; y < image->height(); ++y)
-        for (int x = 0; x < image->width(); ++x) {
-          int dx = operation == "rotate_cw" ? image->height() - 1 - y : operation == "rotate_ccw" ? y : image->width() - 1 - x;
-          int dy = operation == "rotate_cw" ? x : operation == "rotate_ccw" ? image->width() - 1 - x : image->height() - 1 - y;
-          transformed->putPixel(dx, dy, image->getPixel(x, y));
-        }
-    }
+    auto transformed = transformedImage(image, operation);
     if (transformed->size() == image->size() && doc::count_diff_between_images(image, transformed.get()) == 0) return;
     UIContext::instance()->activeEditor()->setLayer(target);
     UIContext::instance()->activeEditor()->setFrame(frame);
@@ -1276,6 +1473,83 @@ private:
     }
     applyPatch(document, target, frame, patch, region, gfx::Point(0, 0), translating ? "AI translate selected pixels" : "AI fill selected pixels", translating ? &moved : nullptr);
   }
+  Json transformSelection(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto frames = uniqueFrames(sprite, params);
+    auto operation = transformOperation(params);
+    auto mask = visibleSelection(document);
+    auto bounds = mask->bounds();
+    require(sprite->bounds().contains(bounds), "SELECTION_OUTSIDE_CANVAS", "Selection must lie entirely inside the canvas.");
+    bool quarter = operation == "rotate_cw" || operation == "rotate_ccw";
+    gfx::Rect destination(bounds.x, bounds.y, quarter ? bounds.h : bounds.w, quarter ? bounds.w : bounds.h);
+    require(sprite->bounds().contains(destination), "OUTSIDE_CANVAS", "Transformed selection would leave the canvas. Clipping is refused.");
+    auto area = bounds | destination;
+    Layer* layer = nullptr;
+    size_t predicted = spriteBytes(sprite);
+    // Validate every target and aggregate worst-case crop growth BEFORE allocating.
+    for (int frame : frames) {
+      auto entry = params; entry["frame"] = frame;
+      layer = paintLayer(document, entry);
+      auto cel = layer->cel(frame);
+      if (cel) {
+        auto grown = cel->bounds() | area;
+        predicted += size_t(grown.w) * grown.h * 4 - imageBytes(cel->image());
+      } else predicted += size_t(area.w) * area.h * 4;
+    }
+    require(predicted <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Selected transforms would exceed the sprite's 32 MiB working limit.");
+    require(size_t(area.w) * area.h * 4 * frames.size() <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Selected-transform scratch exceeds 32 MiB.");
+    Mask transformed;
+    transformed.replace(destination); transformed.bitmap()->clear(0);
+    for (int y = 0; y < bounds.h; ++y) for (int x = 0; x < bounds.w; ++x) if (mask->containsPoint(x + bounds.x, y + bounds.y)) {
+      auto p = transformedPoint(x, y, bounds.w, bounds.h, operation);
+      transformed.bitmap()->putPixel(p.x, p.y, 1);
+    }
+    transformed.shrink();
+    struct Patch { int frame; ImageRef image; gfx::Region region; };
+    std::vector<Patch> patches;
+    int changedFrames = 0;
+    for (int frame : frames) {
+      auto cel = layer->cel(frame);
+      auto sample = [&](int x, int y) { return cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) : color_t(0); };
+      Patch patch{frame, ImageRef(Image::create(IMAGE_RGB, area.w, area.h)), {}};
+      for (int y = 0; y < area.h; ++y) for (int x = 0; x < area.w; ++x) patch.image->putPixel(x, y, sample(x + area.x, y + area.y));
+      // Clear only original mask bits, then paste samples from the original cel,
+      // including transparent pixels. Overlap never reads already-modified data.
+      for (int y = 0; y < bounds.h; ++y) for (int x = 0; x < bounds.w; ++x) if (mask->containsPoint(x + bounds.x, y + bounds.y))
+        patch.image->putPixel(x + bounds.x - area.x, y + bounds.y - area.y, 0);
+      for (int y = 0; y < bounds.h; ++y) for (int x = 0; x < bounds.w; ++x) if (mask->containsPoint(x + bounds.x, y + bounds.y)) {
+        auto p = transformedPoint(x, y, bounds.w, bounds.h, operation);
+        patch.image->putPixel(p.x + destination.x - area.x, p.y + destination.y - area.y, sample(x + bounds.x, y + bounds.y));
+      }
+      for (int y = 0; y < area.h; ++y) {
+        int start = -1;
+        for (int x = 0; x <= area.w; ++x) {
+          bool changed = x < area.w && patch.image->getPixel(x, y) != sample(x + area.x, y + area.y);
+          if (changed && start < 0) start = x;
+          if (!changed && start >= 0) { patch.region |= gfx::Region(gfx::Rect(start, y, x - start, 1)); start = -1; }
+        }
+      }
+      if (!patch.region.isEmpty()) ++changedFrames;
+      patches.push_back(std::move(patch));
+    }
+    bool maskChanged = !sameSelection(document, transformed);
+    if (!changedFrames && !maskChanged) return {{"transformedFrames", 0}};
+    Transaction transaction(UIContext::instance(), "AI transform selected pixels across frames", changedFrames ? ModifyDocument : DoesntModifyDocument);
+    for (auto& patch : patches) if (!patch.region.isEmpty()) {
+      if (auto cel = layer->cel(patch.frame)) transaction.execute(new cmd::PatchCel(cel, patch.image.get(), patch.region, gfx::Point(area.x, area.y)));
+      else {
+        auto created = std::make_shared<Cel>(patch.frame, patch.image);
+        created->setPosition(area.x, area.y);
+        transaction.execute(new cmd::AddCel(layer, created));
+      }
+    }
+    if (maskChanged) transaction.execute(new cmd::SetMask(document, &transformed));
+    finish(transaction, document);
+    if (maskChanged) document->generateMaskBoundaries();
+    UIContext::instance()->activeEditor()->setLayer(layer);
+    UIContext::instance()->activeEditor()->setFrame(frames.front());
+    return {{"transformedFrames", changedFrames}, {"frames", frames}, {"operation", operation}};
+  }
   Json editLayers(Document* document, const Json& params, const std::string& method) {
     auto sprite = document->sprite();
     Json result = Json::object();
@@ -1427,9 +1701,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.6.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.7.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -1494,6 +1768,8 @@ private:
     // Check and mutate under the same lock, on the same UI tick.
     ContextWriter writer(ctx, 0);
     checkRevision(document, params);
+    if (method == "copy_cel" || method == "duplicate_frames" || method == "reorder_frames" || method == "edit_cels" || method == "set_frame_durations" || method == "transform_selection")
+      documentViewsIdle(document);
     SelectionGuard selection(document);
     Json extra = Json::object();
     if (method == "set_pixels") {
@@ -1511,6 +1787,18 @@ private:
       extra = editTags(document, params, method);
     } else if (method == "update_cel" || method == "transform_cel" || method == "unlink_cel") {
       editCel(document, params, method);
+    } else if (method == "copy_cel") {
+      extra = copyCel(document, params);
+    } else if (method == "duplicate_frames") {
+      extra = duplicateFrames(document, params);
+    } else if (method == "reorder_frames") {
+      extra = reorderFrames(document, params);
+    } else if (method == "edit_cels") {
+      extra = editCels(document, params);
+    } else if (method == "set_frame_durations") {
+      extra = frameDurations(document, params);
+    } else if (method == "transform_selection") {
+      extra = transformSelection(document, params);
     } else if (method == "set_selection" || method == "modify_selection") {
       editSelection(document, params, method == "modify_selection");
     } else if (method == "fill_selection" || method == "translate_selection") {
@@ -1530,8 +1818,8 @@ private:
     selection.committed = true;
     // Match native New Layer/New Frame behavior, including the user's existing
     // auto-show preference. Visible timeline rows are safe for group layers.
-    if (method == "create_layer" || method == "add_frame") App::instance()->mainWindow()->popTimeline();
-    if (method == "set_palette" || method == "remove_palette" || method == "undo" || method == "redo") {
+    if (method == "create_layer" || method == "add_frame" || method == "duplicate_frames") App::instance()->mainWindow()->popTimeline();
+    if (method == "set_palette" || method == "remove_palette" || method == "copy_cel" || method == "undo" || method == "redo") {
       set_current_palette(document->sprite()->palette(ctx->activeEditor()->frame()), false);
       ui::Manager::getDefault()->invalidate();
     }

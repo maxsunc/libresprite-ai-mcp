@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.6.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.7.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -34,6 +34,9 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const sheet = { frames: z.array(frame).min(1).max(256).optional(), columns: z.number().int().min(1).max(16).optional(), scale, padding: z.number().int().min(0).max(16).default(0) };
   const direction = z.enum(["forward", "reverse", "pingpong"]);
   const tagColor = z.object({ r: channel, g: channel, b: channel, a: z.literal(255) });
+  const transform = z.enum(["flip_horizontal", "flip_vertical", "rotate_cw", "rotate_ccw", "rotate_180"]);
+  const signedCoordinate = z.number().int().min(-32768).max(32767);
+  const frames = z.array(frame).min(1).max(256);
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -269,6 +272,36 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { ...target, frame, durationMs: z.number().int().min(1).max(65535) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("set_frame_duration", params));
+  server.registerTool("libresprite_copy_cel", {
+    description: "Copy a whole source cel to an existing destination layerId/frame in the SAME active sprite, as one native undo step. No clipboard or frame creation. SourceLayerId/sourceFrame must have an image cel (hidden/locked/linked sources can be read). Destination must be editable/transparent/unlinked/unshared. Existing destination refuses unless overwrite:true; replacement includes transparent pixels, full off-canvas data, position, opacity, and cel user data. Always independent, ignores selections/continuous preference. RGBA/indexed/grayscale; indexed requires equal palettes (no remapping). Same source/destination is a no-op. Requires revision/resumed/idle bridge; focuses destination on success.",
+    inputSchema: { ...celTarget, sourceLayerId: documentId, sourceFrame: frame, overwrite: z.boolean().default(false) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("copy_cel", params));
+  server.registerTool("libresprite_duplicate_frames", {
+    description: "Atomically insert independent copies of explicit unique source frames at index (0..frameCount, append allowed). frames order controls inserted order; all sources refer to PRE-edit indices and are snapshotted before insertion, including overlap. Copies every image layer including hidden/nested/background, blank cels, raw off-canvas pixels/position/opacity/user data and durations. One native undo step; original links preserved, copies never linked. Later indices shift; native tag insertion rules apply (copies inside a tag extend it; no new tags). Refuses locked layers/ancestors, palette keyframes, >256 frames, or >32 MiB working data. Focuses first inserted frame. Revision/resumed/active guards apply.",
+    inputSchema: { ...target, frames, index: z.number().int().min(0).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("duplicate_frames", params));
+  server.registerTool("libresprite_reorder_frames", {
+    description: "Atomically reorder ALL existing frames using order: a complete unique permutation of old indices, where order[newIndex] = oldIndex. Preserves cels/images/linked relationships, off-canvas pixels, opacity, user data and pose durations; one native undo step. Keeps active pose focused at its new index. Tags move with their original member frames; refuses TAG_SPLIT if a tag would become disjoint. No automatic palette/keyframe remapping (multiple palettes refused); locked layers/ancestors refused. Identity order is a no-op. Requires active document/current revision/resumed idle bridge.",
+    inputSchema: { ...target, order: frames },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("reorder_frames", params));
+  server.registerTool("libresprite_edit_cels", {
+    description: "Atomic explicit multi-frame/layer cel batch: edits (1..256) each identify layerId/frame and x/y/opacity and/or exact whole-cel operation. Validate ALL targets/properties and prepare transforms before any change; any error changes nothing; whole batch is ONE native undo step. Existing transparent editable/unlinked cels only; whole transforms also refuse shared images. No implicit create/unlink/selection handling; RGBA/indexed/grayscale, top-left/off-canvas data preserved. Duplicate layer/frame pairs refused. All unchanged is a no-op. Current GUI focus stays unchanged. Requires revision/resumed/active/idle bridge; bounded scratch/working data.",
+    inputSchema: { ...target, edits: z.array(z.object({ layerId: documentId, frame, x: signedCoordinate.optional(), y: signedCoordinate.optional(), opacity: channel.optional(), operation: transform.optional() })).min(1).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("edit_cels", params));
+  server.registerTool("libresprite_set_frame_durations", {
+    description: "Atomically set explicit frame/durationMs pairs (1..256 unique frames, 1..65535 ms) as ONE native undo step. Validate all pairs before changing any timing. Leaves pixels/cels/tags/selection/focus unchanged. Duplicate frames refused; identical timings are a no-op. Works with palette keyframes. Requires active document/current revision/resumed idle bridge.",
+    inputSchema: { ...target, durations: z.array(z.object({ frame, durationMs: z.number().int().min(1).max(65535) })).min(1).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("set_frame_durations", params));
+  server.registerTool("libresprite_transform_selection", {
+    description: "Exact flip/rotation of VISIBLE selected pixels on one layer across explicit unique frames, in ONE native undo step including transformed mask. RGBA only, editable/transparent/unlinked/unshared targets; missing cels can participate as transparent. No visible selection => NO_SELECTION, NEVER whole-cel fallback. Uses selection bounding-box top-left as anchor; quarter turns swap width/height and refuse clipping. Snapshot original pixels, clear only old selected mask bits, then replace transformed destination bits (transparent overwrites too); holes/unrelated/off-canvas pixels stay untouched. Mask transforms once for all frames. Validates all targets/aggregate crop bounds before changes. Focuses first requested frame on success. Revision/resume/active/idle guards apply.",
+    inputSchema: { ...target, layerId: documentId, frames, operation: transform },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("transform_selection", params));
   server.registerTool("libresprite_draw_shape", {
     description: "Draw a native pixel-aligned line, rectangle, or ellipse as ONE undoable edit on an explicit layer/frame. Endpoints are inclusive, inside canvas; rectangle/ellipse corners may be reversed. Lines/outlines are one pixel wide; filled defaults false (invalid for line). Replaces RGBA colors (alpha0 erases). Ignores selection by default; respectSelection:true requires a visible mask and clips drawing to selected pixels. Refuses linked/shared-image/background/locked targets. No-op preserves history; render afterwards.",
     inputSchema: { ...paintTarget, shape: z.enum(["line", "rectangle", "ellipse"]), x1: coordinate, y1: coordinate, x2: coordinate, y2: coordinate, color, filled: z.boolean().default(false), label: z.string().min(1).max(120).default("AI shape") },

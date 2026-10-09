@@ -57,3 +57,25 @@ It exposes guarded explicit activation, non-editing layer/frame focus, and
 saved/unmodified-only document closing through the existing native view/model
 lifecycle. The standalone bridge files retain GPL-2.0-only licensing. No new
 changes to upstream UI source files are needed for the control.
+
+## 2026-10-08 — v0.7.0 atomic animation workflows
+
+`src/app/automation/bridge.cpp` adds independent raw cel copies, explicit frame
+duplication/permutation, atomic cel/timing batches, and selected-mask transforms
+across explicit frames. All are guarded UI-thread transactions with prevalidation
+and bounded scratch/aggregate crop growth.
+
+New `src/app/automation/reorder_frames.cpp` and `.h` implement a native undo
+command that reattaches existing cels according to a validated permutation,
+preserving image/cel-data IDs and linked relationships without transient frame
+collisions. The command snapshots current objects on each undo/redo so later
+layer deletion/restoration cannot leave stale pointers. These new files are
+GPL-2.0-only. `src/app/CMakeLists.txt` includes the command in the native build.
+
+New `src/app/automation/revision_metadata.h` canonicalizes the recovery writer's
+initial 0→1 layer/image version transition in revision fingerprints, without
+modifying the actual native telemetry, properties, pixel data, IDs, or history.
+Higher version counters remain significant. This avoids unrelated background
+backups spuriously blocking edits with `STALE_REVISION`; native unit tests cover
+the canonicalization and retained change detection. This new header is also
+GPL-2.0-only.

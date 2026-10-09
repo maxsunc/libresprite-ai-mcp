@@ -104,6 +104,12 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_activate_document` | Explicit revision/previous-active guarded tab switch |
 | `libresprite_set_active_site` | Focus a layer/frame without editing document data |
 | `libresprite_close_document` | Confirmed saved/unmodified active-document close |
+| `libresprite_copy_cel` | Independent whole-cel copy within one sprite |
+| `libresprite_duplicate_frames` | Ordered copies of explicit pre-edit frame indices |
+| `libresprite_reorder_frames` | Full permutation with pose timing/link/tag guards |
+| `libresprite_edit_cels` | Atomic explicit multi-frame/layer cel property/transforms |
+| `libresprite_set_frame_durations` | Atomic explicit frame/timing batch |
+| `libresprite_transform_selection` | Selected-region flips/rotations across explicit frames |
 | `libresprite_inspect` | Layers/cels, frames/durations, palettes, tags, revision |
 | `libresprite_render` | Composite a frame to PNG image content |
 | `libresprite_list_assets` | Browse supported assets/directories inside the root |
@@ -142,7 +148,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **45 tools** in server/bridge version **0.6.0**. Rebuild the editor
+There are **51 tools** in server/bridge version **0.7.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -205,6 +211,118 @@ and is **not undoable**, but does not delete/change saved files or quit the edit
 It returns `closedDocumentId`, `lastRevision`, and the newly selected
 `activeDocumentId` (possibly null). Reopening creates a new document ID.
 After an uncertain response list documents instead of blindly retrying.
+
+## Atomic animation workflows (v0.7.0)
+
+The following operations require a resumed bridge, the active sprite/current
+revision, and idle GUI/target views. Frame arrays use explicit **zero-based**
+indices rather than an implicit timeline selection. Each request is one native
+undo transaction; invalid later targets cannot leave earlier targets edited.
+These are targeted native operations, not an arbitrary-script or general batch
+dispatcher. Cross-document/system-clipboard copy and general multi-frame
+painting are not implemented by these tools.
+
+### Copy a cel
+
+`copy_cel` uses `sourceLayerId`/`sourceFrame` plus destination `layerId`/`frame`
+in the **same sprite**. No frames are created. A source image cel is mandatory;
+missing source is `CEL_NOT_FOUND`, not permission to erase a destination.
+Hidden/locked/linked source cels may be read. Destination layers must be
+transparent/editable with editable ancestors; linked/shared-image destinations
+are refused. Existing destinations require explicit `overwrite: true`
+(`CEL_EXISTS` otherwise). Same source/destination is a no-op.
+
+This replaces the whole destination cel, including transparent pixels, and
+copies the full cropped/off-canvas image, top-left position, opacity, and cel
+user data into an **independent** image/cel-data object. It never silently links,
+trims to canvas, flattens layers, or follows continuous-layer preferences. It
+supports RGBA/indexed/grayscale. Indexed source/destination palettes must be
+identical (`UNSUPPORTED_PALETTES` otherwise); no silent index remapping. The
+selection mask is ignored and retained. Success focuses the destination.
+
+### Duplicate frames
+
+`duplicate_frames` takes 1–256 unique source `frames` and insertion `index`
+in `0..frameCount` (append allowed, including index 256 when permitted by bounds).
+Source indices always refer to the **pre-edit sprite**, and array order controls
+the order of inserted copies. All sources are snapshotted before insertion,
+including when source/destination ranges overlap.
+
+It copies every image layer (nested/hidden/background included), missing cels as
+missing, durations, raw images/positions/opacities/user data. Original links
+remain intact; new cels are never linked. Group/layer properties stay unchanged.
+Native insertion rules shift/extend existing tag ranges but create no new tags.
+Locked layers/ancestors and multiple palette keys are refused. Total frames must
+stay ≤256 and predicted image/scratch data within bounds. It focuses the first
+inserted frame; inspect again because later indices shifted.
+
+### Reorder frames
+
+`reorder_frames` requires `order`, a complete unique permutation of every current
+frame. `order[newIndex] = oldIndex`; e.g. `[2,0,1]` places original frame 2 first.
+All cels/images/cel-data (including links, off-canvas pixels and user data) retain
+their identities. Durations move with poses; active pose remains focused at its
+new index. Identity order is a no-op.
+
+Tag ranges move with the **original member frames**. If those frames would become
+disjoint the request fails with `TAG_SPLIT`; update/remove that tag explicitly
+first rather than silently broadening or splitting it. Within a surviving range
+the requested permutation controls playback order; tag direction/color/name/ID
+are unchanged. Multiple palette keys and locked layers/ancestors are refused.
+
+### Atomic cel and timing batches
+
+`edit_cels` takes 1–256 `edits`, each identifying an existing `layerId`/`frame`
+and at least one of `x`, `y`, `opacity`, or `operation`. Position values are
+absolute signed native coordinates (−32768..32767); opacity is 0..255. Exact
+operations are `flip_horizontal`, `flip_vertical`, `rotate_cw`, `rotate_ccw`, and
+`rotate_180`. A transform permutes the entire cel at its top-left, then optional
+position/opacity overrides apply. It supports RGBA/indexed/grayscale, ignores
+the selection, and preserves off-canvas data. Existing transparent editable
+unlinked cels are required; transforms also refuse shared images. Duplicate
+layer/frame pairs are refused. All properties/targets are validated, and all
+transformed images prepared, before the transaction starts. It leaves focus
+unchanged and reports `editedCels` (changed targets only).
+
+`set_frame_durations` takes 1–256 `durations`, each with unique `frame` and
+`durationMs` (1..65535). It validates all entries before changing any timing,
+leaves pixels/masks/tags/focus unchanged, and works with palette keyframes. It
+reports `editedDurations` (changed frames only). Both batches preserve revision
+and undo/redo history when nothing changed.
+
+### Selected-region transforms across frames
+
+`transform_selection` takes one `layerId`, 1–256 unique `frames`, and exact
+`operation` from the list above. It requires a **visible nonempty document-wide
+selection** (`NO_SELECTION` otherwise), RGBA mode, and editable transparent
+unlinked/unshared targets. A missing cel samples as transparent. There is never
+a whole-cel fallback or implicit unlink.
+
+The selection bounding-box **top-left stays anchored**. Quarter turns swap
+width/height; the original and destination bounds must both be wholly on canvas.
+Clipping is refused. The operation snapshots each frame, clears only original
+selected bits, and replaces transformed destination bits with original samples
+(including transparent overwrites). Sparse mask holes and unrelated pixels
+outside source/destination selected bits remain untouched, as do off-canvas cel
+pixels. The mask itself transforms **once**, and is included with all frame edits
+in one undo step. Mask-only changes do not mark the sprite modified; no pixel/mask
+change consumes no history. Success focuses the first requested frame.
+
+Aggregate worst-case crop growth is checked before allocations/edits. Native
+working image data and per-request image scratch are each bounded at 32 MiB;
+requests can conservatively refuse a large/off-canvas operation even if later
+native trimming might reduce its final size. Whole-cel transformed bounds are
+at most 1024×1024. Native undo can advance internal version/revision counters
+even while restoring pixel-perfect persistent data: always inspect again.
+Background recovery can initialize native layer/image version telemetry from
+0 to 1 without editing anything. Revision fingerprints treat only that initial
+bookkeeping transition as equivalent; properties/pixels/IDs/history and higher
+versions still detect changes. The raw version fields in inspect remain native
+telemetry and can therefore change during an otherwise read-only workflow.
+
+Run `python3 scripts/test-live-bridge.py --animation-only` for focused disposable
+GUI/native-file regressions, or `node scripts/demo-animation.mjs` for the
+[step 2 manual review](testing-v0.7.md).
 
 ## Layers, drawing, and animation
 

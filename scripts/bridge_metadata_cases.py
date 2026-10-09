@@ -20,7 +20,13 @@ def test_palettes_tags_animation(client, assets, smoke):
 
     def mutate(method, params=None, error=None):
         before = current()
-        result = client.request(method, {"documentId": document_id, "expectedRevision": before["revision"], **(params or {})}, expected_error=error)
+        try:
+            result = client.request(method, {"documentId": document_id, "expectedRevision": before["revision"], **(params or {})}, expected_error=error)
+        except AssertionError:
+            # Diagnose unexpected GUI state changes without retrying a mutation.
+            after = current()
+            print("Unexpected native state change:", method, {key: (before.get(key), after.get(key)) for key in after if before.get(key) != after.get(key)}, flush=True)
+            raise
         if error:
             assert current() == before, (method, error)
         return result

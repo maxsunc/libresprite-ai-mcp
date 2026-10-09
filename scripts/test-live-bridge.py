@@ -16,6 +16,7 @@ from bridge_preview_cases import test_assets_previews_exports
 from bridge_metadata_cases import test_palettes_tags_animation
 from bridge_selection_cases import test_cels_and_selection
 from bridge_navigation_cases import test_navigation
+from bridge_animation_cases import test_animation_workflows
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -56,6 +57,7 @@ class Client:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--navigation-only", action="store_true", help="Run step 1 checks in a fresh GUI, including closing the last sprite.")
+    parser.add_argument("--animation-only", action="store_true", help="Run step 2 animation/selection checks in a fresh GUI.")
     options = parser.parse_args()
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
@@ -80,7 +82,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.6.0" and "close_document" in status["methods"]
+                assert status["bridgeVersion"] == "0.7.0" and "transform_selection" in status["methods"]
                 assert status["connected"] and not status["pausedByUser"] and status["controlText"] == "AI: Paused | Resume"
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
@@ -89,12 +91,16 @@ def main():
                 assert client.request("list_documents")["documents"] == []
                 client.request("create", {"width": 16, "height": 16, "name": "Test"}, expected_error="PAUSED")
                 client.request("set_paused", {"paused": False})
+                if options.animation_only:
+                    test_animation_workflows(client, assets, SMOKE)
+                    return
                 if options.navigation_only:
                     test_navigation(client, assets, SMOKE)
                     assert client.request("list_documents")["activeDocumentId"] is None
                     assert client.request("status")["pid"] == process.pid
                     print("PASS: closing the last saved sprite leaves an empty, connected editor rather than quitting.")
                     return
+                test_animation_workflows(client, assets, SMOKE)
                 document = client.request("create", {"width": 16, "height": 16, "name": "Live bridge test"})
                 document_id = document["documentId"]
                 layer_id = document["layers"][0]["layerId"]

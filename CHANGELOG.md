@@ -1,5 +1,27 @@
 # Development milestones
 
+## 0.7.0 — Atomic animation workflows (2026-10-08)
+
+- 51 MCP tools: whole-cel copy/paste within one sprite, ordered frame duplication,
+  frame permutation, multi-cel edits, multi-frame timing, and selected-region
+  flips/rotations across explicit frames. Every request is one native undo step.
+- Cel copies preserve raw color/index/gray bytes, off-canvas pixels, position,
+  opacity and cel user data; copies are independent, existing destinations
+  require explicit overwrite, and unequal indexed palettes are refused.
+- Range copies snapshot pre-edit source indices before insertion and preserve
+  durations/nested layers. Reorders retain cel/image/link identities, move tags
+  with their original members, and refuse tag splits or palette keyframes.
+- Cel/timing batches validate every target/property before any changes; duplicate
+  targets are refused and unchanged batches preserve undo/redo history.
+- Selected-pixel transforms include the document-wide mask in the same undo
+  transaction, preserve sparse mask holes, handle overlapping/transparent
+  samples, and refuse clipping, hidden/absent selections or implicit unlinking.
+- Adds aggregate scratch/growth guards, disposable-GUI/native-file regressions,
+  and a real MCP review demo. Step 1 was user-approved; step 2 awaits review.
+- Fixes spurious stale revisions when upstream background recovery initializes
+  new layer/image versions from 0 to 1 without changing data; native unit tests
+  retain first-edit property and higher-version detection.
+
 ## 0.6.0 — Live workflow and user control (2026-10-08)
 
 - 45 MCP tools: explicit guarded document activation, non-editing frame/layer
