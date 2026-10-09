@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 51);
+    assert.equal(tools.length, 59);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -69,8 +69,17 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const target = { documentId: 1, expectedRevision: 1 };
     const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
     const valid = [
+      ["create", { width: 16, height: 16, colorMode: "indexed" }],
+      ["resize_canvas", { ...target, width: 8, height: 12 }],
+      ["crop_canvas", { ...target, x: 1, y: 2, width: 8, height: 8 }],
+      ["duplicate_layer", { ...target, layerId: 1, parentId: null }],
+      ["reparent_layer", { ...target, layerId: 1, parentId: null }],
+      ["set_polygon_selection", { ...target, vertices: [{ x: 1, y: 1 }, { x: 3, y: 1 }, { x: 2, y: 3 }] }],
+      ["set_bitmap_selection", { ...target, x: 1, y: 2, width: 2, height: 2, bits: "1001" }],
+      ["draw_brush_stroke", { ...paint, points: [{ x: 2, y: 2 }], brush: { width: 3, height: 3, bits: "010111010" } }],
+      ["set_indexed_pixels", { ...target, layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 3 }] }],
       ["create_layer", { ...target, name: "Ink" }],
-      ["update_layer", { ...target, layerId: 1, visible: false, editable: false, opacity: 0 }],
+      ["update_layer", { ...target, layerId: 1, visible: false, editable: false, opacity: 0, blendMode: "multiply" }],
       ["move_layer", { ...target, layerId: 1, afterLayerId: null }],
       ["remove_layer", { ...target, layerId: 1 }],
       ["add_frame", { ...target, index: 0, copyFrom: 0, durationMs: 65535 }],
@@ -143,12 +152,34 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "render_selection")?.params.opacity, 96);
     assert.equal(requests.find((item) => item.method === "translate_selection")?.params.copy, false);
     assert.equal(requests.find((item) => item.method === "copy_cel")?.params.overwrite, false);
+    assert.equal(requests.find((item) => item.method === "resize_canvas")?.params.offsetX, 0);
+    assert.equal(requests.find((item) => item.method === "resize_canvas")?.params.offsetY, 0);
+    assert.equal(requests.find((item) => item.method === "crop_canvas")?.params.discardOutside, false);
+    assert.equal(requests.find((item) => item.method === "draw_brush_stroke")?.params.clipToCanvas, false);
+    assert.equal(requests.find((item) => item.method === "set_polygon_selection")?.params.mode, "replace");
+    assert.equal(requests.find((item) => item.method === "set_bitmap_selection")?.params.mode, "replace");
+    const indexedBrush = await client.callTool({ name: "libresprite_draw_brush_stroke", arguments: { ...target, layerId: 1, frame: 0, index: 2, points: [{ x: 1, y: 1 }], brush: { width: 1, height: 1, bits: "1" }, respectSelection: true } });
+    assert.equal(indexedBrush.isError, undefined);
+    assert.equal(requests.at(-1)?.params.index, 2);
+    assert.equal(requests.at(-1)?.params.color, undefined);
     const selectionAware = await client.callTool({ name: "libresprite_draw_stroke", arguments: { ...paint, points: [{ x: 1, y: 2 }], respectSelection: true } });
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
+      ["create", { width: 16, height: 16, colorMode: "cmyk" }],
+      ["resize_canvas", { ...target, width: 0, height: 12 }],
+      ["resize_canvas", { ...target, width: 12, height: 12, offsetX: 1024 }],
+      ["crop_canvas", { ...target, x: 1, y: 2, width: 8, height: 8, discardOutside: "yes" }],
+      ["duplicate_layer", { ...target, layerId: 1, parentId: 0 }],
+      ["reparent_layer", { ...target, layerId: 1 }],
+      ["set_polygon_selection", { ...target, vertices: [{ x: 1, y: 1 }, { x: 2, y: 2 }] }],
+      ["set_bitmap_selection", { ...target, x: 1, y: 2, width: 2, height: 2, bits: "10x1" }],
+      ["draw_brush_stroke", { ...paint, points: [], brush: { width: 1, height: 1, bits: "1" } }],
+      ["draw_brush_stroke", { ...paint, points: [{ x: 1, y: 2 }], brush: { width: 33, height: 1, bits: "1" } }],
+      ["set_indexed_pixels", { ...target, layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 256 }] }],
       ["create_layer", { ...target, name: "", type: "unknown" }],
       ["update_layer", { ...target, layerId: 1, opacity: 256 }],
+      ["update_layer", { ...target, layerId: 1, blendMode: "unknown" }],
       ["move_layer", { ...target, layerId: 1 }],
       ["remove_layer", { ...target, layerId: 1, recursive: "true" }],
       ["add_frame", { ...target, index: 256 }],

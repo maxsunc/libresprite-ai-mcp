@@ -79,3 +79,21 @@ Higher version counters remain significant. This avoids unrelated background
 backups spuriously blocking edits with `STALE_REVISION`; native unit tests cover
 the canonicalization and retained change detection. This new header is also
 GPL-2.0-only.
+
+## 2026-10-08 — v0.8.0 canvas, layers, masks, and painting
+
+`src/app/automation/bridge.cpp` adds bounded all-frame canvas operations,
+independent recursive layer copies, layer reparenting/blend properties,
+polygon/bitmap masks, explicit bitmap brushes, indexed creation and exact-index
+pixel painting. Canvas resize preserves whole images; crop uses native
+ReplaceImage/RemoveCel/SetCelPosition/SetSpriteSize/SetMask transactions with
+explicit discard authorization. Pixel work still uses native PatchCel, trimming,
+and undo; brush path/edges use native integer primitives. All document mutations
+now check that every target editor view is idle, not just animation-range edits.
+
+New `src/app/automation/reparent_layer.cpp` and `.h` implement an ID-resolving
+native undo command that changes parent/order without cloning or removing
+objects. A destination allocation happens before detaching from the source;
+undo/redo resolve IDs after later folder deletion/restoration. These new files
+are GPL-2.0-only. `src/app/CMakeLists.txt` builds this command. No upstream
+document-model or ordinary-editor command behavior is changed for this milestone.

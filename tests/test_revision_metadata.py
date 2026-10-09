@@ -56,10 +56,15 @@ int main() {
 
     def test_actual_first_edit_properties_are_not_hidden(self):
         before = self.metadata()
-        for key, value in (("opacity", 100), ("x", 12), ("imageId", 4), ("links", 1)):
+        for key, value in (("opacity", 100), ("x", 12), ("imageId", 4), ("links", 1), ("celId", 5), ("celDataId", 6), ("userData", {"text": "first edit", "color": 0})):
             changed = copy.deepcopy(before)
             changed["layers"][0]["cels"][0]["imageVersion"] = 1
             changed["layers"][0]["cels"][0][key] = value
+            self.assertNotEqual(self.normalize(before), self.normalize(changed))
+        for key, value in (("continuous", True), ("movable", False), ("userData", {"text": "first layer edit", "color": 1234})):
+            changed = copy.deepcopy(before)
+            changed["layers"][0]["version"] = 1
+            changed["layers"][0][key] = value
             self.assertNotEqual(self.normalize(before), self.normalize(changed))
         changed = copy.deepcopy(before)
         changed["frames"][0]["durationMs"] = 120

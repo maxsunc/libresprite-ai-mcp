@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-animation-review", version: "0.7.0" });
+const client = new Client({ name: "libresprite-animation-review", version: "0.8.0" });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let stopping = false;
 process.once("SIGINT", () => { stopping = true; });
@@ -40,7 +40,7 @@ async function edit(method, args) { return request(method, { ...await target(), 
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 51);
+  assert.ok((await client.listTools()).tools.some((tool) => tool.name === "libresprite_edit_cels"));
   const launched = await request("launch");
   const deadline = Date.now() + 15_000;
   let status;
@@ -48,7 +48,7 @@ try {
     try { status = await request("connect"); break; }
     catch (error) { if (Date.now() > deadline) throw error; await wait(100); }
   }
-  assert.equal(status.bridgeVersion, "0.7.0");
+  assert.ok(status.methods.includes("edit_cels"));
   await request("set_paused", { paused: false });
   let doc = await request("create", { width: 48, height: 48, name: "Step 2 animation review" });
   documentId = doc.documentId;

@@ -110,6 +110,14 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_edit_cels` | Atomic explicit multi-frame/layer cel property/transforms |
 | `libresprite_set_frame_durations` | Atomic explicit frame/timing batch |
 | `libresprite_transform_selection` | Selected-region flips/rotations across explicit frames |
+| `libresprite_resize_canvas` | Resize/shift all frames while preserving off-canvas pixels |
+| `libresprite_crop_canvas` | Explicit, guarded, undoable all-frame pixel/mask crop |
+| `libresprite_duplicate_layer` | Independent image-layer or nested-group subtree copy |
+| `libresprite_reparent_layer` | ID-preserving cycle-safe move into an explicit group/root |
+| `libresprite_set_polygon_selection` | Even-odd polygon pixel mask with native inclusive edges |
+| `libresprite_set_bitmap_selection` | Explicit sparse row-major binary pixel mask |
+| `libresprite_draw_brush_stroke` | Explicit bitmap brush along a connected native path |
+| `libresprite_set_indexed_pixels` | Exact palette-index painting/erasure without conversion |
 | `libresprite_inspect` | Layers/cels, frames/durations, palettes, tags, revision |
 | `libresprite_render` | Composite a frame to PNG image content |
 | `libresprite_list_assets` | Browse supported assets/directories inside the root |
@@ -119,11 +127,11 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_export_png` | Atomic composited frame PNG export |
 | `libresprite_export_sprite_sheet` | Atomic PNG sheet export with returned layout/timing metadata |
 | `libresprite_export_animation` | Atomic GIF or lossless RGBA APNG export |
-| `libresprite_create` | New single-frame transparent RGBA sprite |
+| `libresprite_create` | New single-frame transparent RGBA or indexed sprite |
 | `libresprite_open` | Open PNG or a native sprite inside the root |
 | `libresprite_set_pixels` | Atomic replacement-color pixel batch |
 | `libresprite_create_layer` | New image layer or group, with explicit parent/order |
-| `libresprite_update_layer` | Name, visibility, editable/lock state, image opacity |
+| `libresprite_update_layer` | Name, visibility, editable/lock state, image opacity/blend |
 | `libresprite_move_layer` | Restack within the same group |
 | `libresprite_remove_layer` | Delete a layer or explicitly authorized group subtree |
 | `libresprite_add_frame` | Insert a blank frame or independent copy |
@@ -148,7 +156,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **51 tools** in server/bridge version **0.7.0**. Rebuild the editor
+There are **59 tools** in server/bridge version **0.8.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -324,6 +332,136 @@ Run `python3 scripts/test-live-bridge.py --animation-only` for focused disposabl
 GUI/native-file regressions, or `node scripts/demo-animation.mjs` for the
 [step 2 manual review](testing-v0.7.md).
 
+## Canvas, layers, masks, brushes, and indexed painting (v0.8.0)
+
+These edits require an active document/current revision, resumed bridge, and idle
+target views. Each request is one native undo transaction; unchanged requests
+preserve revision/history/focus. Invalid later targets or work limits cannot
+leave earlier changes applied. The same idle-view check now also applies to
+earlier document-mutating tools, including undo/redo/save.
+
+### Canvas resize versus destructive crop
+
+`resize_canvas` takes `width`/`height` (1..1024), optional signed `offsetX`/
+`offsetY` (−1023..1023, default 0). It changes the canvas **without scaling or
+deleting pixels**, even when shrinking. Off-canvas cel pixels remain in the
+native file and return when the canvas grows. Offsets move every unique linked
+cel-data object **once**, and move the full selection, including hidden/off-canvas
+masks. No centering is inferred. Signed native cel/selection origin limits are
+checked before changes. Timing/tags/palettes/link identities/focus stay intact.
+If there are no cels or selection to shift, an unchanged-size offset request is
+a no-op; if only the selection shifts, saved/modified state remains unchanged.
+
+`crop_canvas` takes explicit in-canvas `x`, `y`, `width`, `height`; this rectangle
+becomes the new canvas at origin 0,0. It crops raw cel images on **all frames and
+layers**, removes wholly outside cels, and clips/moves the visible selection.
+Any cel **bounds** (even transparent padding/off-canvas data) or mask bounds
+outside the crop is `WOULD_DISCARD_PIXELS` unless `discardOutside: true` is
+explicitly provided. Do not authorize this automatically just to bypass a refusal.
+One Undo restores every removed pixel/cel, the old canvas size, positions and mask.
+Remaining linked cels stay linked, and opacity/user data/timing/tags/palettes stay
+intact. A full-canvas crop can still discard existing off-canvas data.
+
+Both support transparent RGBA/indexed/grayscale layers, refuse native background
+layers and locked layers/ancestors, and never convert/remap colors. Convert a
+background deliberately in the editor first. Crop also refuses a retained hidden
+selection (`HIDDEN_SELECTION`), cross-layer shared cel data (`SHARED_CEL_DATA`),
+or images shared by separate cel-data objects (`SHARED_IMAGE`) rather than
+implicitly unlinking or corrupting aliases. Scratch images are prepared and
+bounded to 32 MiB before mutation. Resize retains all these aliases unchanged.
+
+### Independent subtree duplication and reparenting
+
+`duplicate_layer` takes source `layerId`, optional `name`, destination `parentId`
+(omitted=same parent, null=root), and `afterLayerId` (omitted=after source in same
+parent or destination top, null=bottom). Image layers or complete nested groups
+are copied across all frames: names, flags (including visibility/lock/continuous),
+image-layer opacity/blend, layer/cel user data, raw off-canvas pixels, positions
+and cel opacity. **Every copied cel/image is independent**, including linked
+sources; source links remain unchanged. Copies get new IDs and success focuses
+the new top-level layer. Hidden/locked sources can be read, but destination
+ancestors must be editable. Background sources, below-background insertion,
+more than 128 layers, or predicted data above 32 MiB are refused.
+
+`reparent_layer` moves a layer/group subtree to explicit `parentId` (null=root).
+Optional `afterLayerId` means a destination sibling or null=bottom; omission
+keeps position for the same parent or appends at the new destination top. It
+retains every layer/cel/image ID, byte, link and property. Compositing can change
+because group visibility and stack order change. It refuses self/descendant
+cycles (`LAYER_CYCLE`), locked source/destination ancestry, movement-locked or
+background targets, and below-background insertion. One Undo restores parent/order,
+even after a later folder deletion/restoration; focus remains on the existing
+layer/frame. `move_layer` retains its earlier same-parent-only behavior.
+
+`update_layer` additionally accepts `blendMode` for transparent image layers:
+`normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color_dodge`,
+`color_burn`, `hard_light`, `soft_light`, `difference`, `exclusion`, `hue`,
+`saturation`, `color`, `luminosity` (native values 0..15 in this order).
+Properties remain atomic, lock checks unchanged, and group/background blend or
+opacity changes remain unsupported. Inspect reports numeric `blendMode`,
+`continuous` and `movable` flags; no global preferences are changed.
+Cel metadata includes `celId`/`celDataId`/`imageId` for verifying independent
+copies and retained links/identity. Nonempty layer/cel `userData` contains native
+`text`/packed RGBA `color`; these properties also participate in revisions, so a
+first user-data edit is not hidden by recovery's initial version canonicalization.
+
+### Polygon and explicit bitmap masks
+
+`set_polygon_selection` takes 3..128 in-canvas `{x,y}` vertices with at least
+three distinct points. It fills at pixel centers using the **even-odd** rule,
+then includes native one-pixel boundary lines. Winding reversal is equivalent;
+self-intersections use even-odd fill rather than refusing, and degenerate edges
+remain one-pixel lines. No antialiasing. Bounding-box pixels × edge count is
+limited to 8,388,608 to keep work bounded.
+
+`set_bitmap_selection` takes in-canvas `x/y/width/height` and `bits`, a string of
+exactly `width*height` binary digits, row-major top-to-bottom, up to 262,144
+digits. `1` selects, `0` doesn't: sparse/disconnected regions and holes are allowed.
+All zeros clears in replace mode. Larger simple masks can use rectangle/polygon
+tools rather than a large binary string.
+
+Both accept `mode: replace | add | subtract | intersect` (default replace),
+combine the actual pixel mask within canvas, treat hidden masks as empty, and
+clear empty results. These are document-wide, all-color-mode selections, not
+saved sprite pixels. One Undo restores the visible mask without changing
+saved/modified state or focus; identical masks preserve redo/history. Use
+`render_selection` to check actual pixels.
+
+### Explicit bitmap brushes and exact palette indices
+
+`draw_brush_stroke` requires explicit `layerId`/`frame`, 1..1024 in-canvas path
+`points`, and `brush: {width, height, bits, anchorX?, anchorY?}`. Footprints are
+1..32 pixels per dimension, exact row-major binary strings with at least one
+set bit. The anchor defaults to `(floor(width/2), floor(height/2))`; custom anchors
+must be inside the footprint. Native one-pixel lines connect the points and the
+brush is stamped at each unique center; overlapping stamps just replace the
+same color/index. Work is bounded to 8,388,608 stamp-pixel visits. Brush footprint
+clipping is refused unless `clipToCanvas: true`; no global brush/pressure/smoothing
+settings are touched.
+
+RGBA sprites require `color: {r,g,b,a}`, indexed sprites require exact `index`
+(0..255); supply **exactly one**, and no grayscale painting/conversion is added.
+Replacement is not alpha blending; RGBA alpha0 or the sprite's transparent palette
+index erases. `respectSelection: true` requires a visible mask and limits every
+stamp pixel; default ignores the mask. Target must be an editable transparent
+image layer with no linked/shared image. One Undo restores the complete stroke.
+Changed strokes focus the target; no-op strokes don't.
+
+`create` accepts `colorMode: rgba | indexed` (default rgba). Indexed sprites
+start with a native 256-entry palette and transparent index0; set explicit
+swatches with `set_palette`. Inspect/list/preview report `transparentIndex`
+(null for nonindexed), so agents don't infer which index erases an existing file.
+`set_indexed_pixels` takes 1..16384 `{x,y,index}` pixels in an indexed target.
+The index must exist in that frame's effective palette or equal transparentIndex.
+Duplicate coordinates use the **last supplied index**. All pixels validate even
+if unselected; `respectSelection` and target guards match brush painting. Missing
+cels can be created; no-op/transparent-on-empty patches don't consume history.
+Raw indices are never converted, alpha-blended, recolored, or remapped; palette
+keyframes affect rendering only through their normal index lookup.
+
+Run `python3 scripts/test-live-bridge.py --editing-only` for focused disposable-GUI
+regressions, or `node scripts/demo-editing.mjs` for the [step 3 review](testing-v0.8.md).
+
 ## Layers, drawing, and animation
 
 Every mutating tool below requires the active `documentId`, `expectedRevision`,
@@ -342,10 +480,10 @@ Changing the pixel selection mask does.
   insert at the bottom. Moving requires a sibling ID or null and never reparents
   a layer. Insertion below a background layer is refused.
 - `update_layer` accepts any combination of `name`, `visible`, `editable`, and
-  image `opacity` (0–255). The whole update is one undo step. A locked layer can
+  image `opacity` (0–255) or `blendMode` (names above). The whole update is one undo step. A locked layer can
   be explicitly unlocked, but **only in a separate request** before other
-  property edits. Locked ancestors cannot be bypassed. Group opacity and blend
-  mode changes are not exposed yet.
+  property edits. Locked ancestors cannot be bypassed. Group/background opacity
+  and blend mode changes are not exposed.
 - Creating layers/frames honors LibreSprite's existing auto-show-timeline
   preference. Group rows show empty cells; children have their own editable rows.
   Group expand/collapse controls are not added in this milestone.
@@ -360,8 +498,8 @@ Changing the pixel selection mask does.
   `filled` defaults false and must remain false for a line. Outlines are one
   pixel wide; rasterization uses the editor's native primitives.
 - `draw_stroke`: connect 1–1,024 `{x,y}` points with native one-pixel lines as a
-  single atomic undo step. A one-point stroke draws one pixel. Brush width,
-  pressure and smoothing are not added yet.
+  single atomic undo step. A one-point stroke draws one pixel. For custom bitmap
+  footprints use `draw_brush_stroke`; pressure and smoothing are not added.
 - `flood_fill`: use seed `x,y`, `tolerance` (0–255, default 0), and `contiguous`
   (default true). It samples **only the target cel**, with transparent pixels
   filling the rest of its canvas, **not the visible multi-layer composite**.
@@ -525,8 +663,9 @@ whole-cel clearing fallback.**
 These selected pixel operations require the active document/current revision/
 resumed bridge. They select changed target layer/frame, are RGBA-only for now,
 and refuse locked/background/linked/shared-image targets. For indexed/grayscale
-sprites, whole-cel transforms/properties remain available but pixel selection
-painting/remapping is not exposed.
+sprites, whole-cel transforms/properties remain available. Indexed selection-aware
+painting uses `set_indexed_pixels`/`draw_brush_stroke`; selected-region moves/
+rotations and automatic palette remapping remain unsupported there.
 
 ```json
 {
@@ -831,12 +970,17 @@ supported—save `.ase` to retain the editable sprite.
   frames, 128 tags, 256 palette keyframes, 128 layers **including nested
   groups/children**, 32 open documents, and 32 MiB of image working data / input
   file size. Animated export has a separate 8,388,608-total-pixel/32-MiB budget.
-- Pixel batches: 1–16,384 pixels, transparent **RGBA image layers only**.
+- Pixel batches: 1–16,384 pixels, transparent RGBA (`set_pixels`) or indexed
+  (`set_indexed_pixels`) image layers; indexed painting supplies exact indices.
   Background/locked layers and linked/shared-image cels are refused. Colors
   replace pixels, duplicates use the last supplied color, and selection masks
   are ignored unless `respectSelection: true` explicitly enables them.
-- Palette index remapping, color-mode conversion, brush engines, cross-group
-  reparenting, packed/trimmed sprite sheets, animated-asset browsing, and APNG
+- Canvas edits require transparent layers; destructive crop requires explicit
+  permission to discard bounds and refuses hidden selections/cross-layer aliases.
+  Bitmap brush footprints are ≤32×32, binary mask strings ≤262,144 pixels,
+  and brush/polygon work is bounded to 8,388,608 visits/tests.
+- Palette index remapping, color-mode conversion, pressure/smoothed brush engines,
+  image scaling, merge/flatten, packed/trimmed sprite sheets, animated-asset browsing, and APNG
   editing/round-trip are not exposed yet. Native `.ase`, full-canvas PNG sheets,
   GIF, and lossless RGBA APNG exports are supported.
 - The pinned editor's legacy bulk group UI and crash-recovery paths are not fully
@@ -893,6 +1037,16 @@ pixel/mask/history/revision preservation, saved-only closing, replay/reopen, and
 unchanged saved files/other documents. The manual user-pause test is described in
 [testing-v0.6.md](testing-v0.6.md), with a real MCP demo that holds a connection
 for testing the button and refuses to override a local pause.
+`scripts/bridge_animation_cases.py` covers raw cel copying, frame ranges/tags/
+timing/link identities, atomic batches and selected-mask transforms, including
+undo after layer recreation. `scripts/bridge_editing_cases.py` adds exact all-mode
+canvas preserve/crop/mask/link restoration, independent subtree copies,
+ID-preserving reparenting after folder recreation, blends, polygon/bitmap masks,
+custom brush replacement/selection/erasure/clipping, indexed palettes/raw bytes/
+save/reopen, and prevalidated work/memory/lock/cycle refusals. Focused flags are
+`--navigation-only`, `--animation-only`, and `--editing-only`; real MCP demos and
+manual checklists are available for [step 2](testing-v0.7.md) and
+[step 3](testing-v0.8.md).
 Do not interact with that test window while it runs. The tests do not establish
 cross-platform GUI correctness or unlimited hostile-input resilience.
 

@@ -19,7 +19,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-live-demo", version: "0.7.0" });
+const client = new Client({ name: "libresprite-live-demo", version: "0.8.0" });
 const animation = process.argv.includes("--animation");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,7 +34,7 @@ async function call(name, args = {}) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 51);
+  assert.ok((await client.listTools()).tools.some((tool) => tool.name === "libresprite_draw_shape"));
   console.log((await call("libresprite_launch")).metadata);
   const deadline = Date.now() + 15_000;
   while (true) {

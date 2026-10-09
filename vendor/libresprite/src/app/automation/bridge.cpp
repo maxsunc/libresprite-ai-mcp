@@ -2,12 +2,14 @@
 // Distributed under GNU GPL version 2 only (GPL-2.0-only); see the root LICENSE.
 // Updated 2026-10-08: visible user controls and guarded document/site navigation.
 // Updated 2026-10-08: independent cel copies and atomic animation-range editing.
+// Updated 2026-10-08: guarded canvas/layer operations, masks, brushes/index painting.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
 #include "app/automation/apng.h"
 #include "app/automation/reorder_frames.h"
+#include "app/automation/reparent_layer.h"
 #include "app/automation/revision_metadata.h"
 #include "app/cmd/add_cel.h"
 #include "app/cmd/add_frame_tag.h"
@@ -31,6 +33,9 @@
 #include "app/cmd/set_layer_flags.h"
 #include "app/cmd/set_layer_name.h"
 #include "app/cmd/set_layer_opacity.h"
+#include "app/cmd/set_layer_blend_mode.h"
+#include "app/cmd/set_sprite_size.h"
+#include "app/cmd/set_mask_position.h"
 #include "app/cmd/set_palette.h"
 #include "app/cmd/set_mask.h"
 #include "app/cmd/unlink_cel.h"
@@ -215,7 +220,7 @@ Json summary(Document* document) {
   return {{"documentId", document->id()}, {"name", document->filename()},
           {"width", sprite->width()}, {"height", sprite->height()},
           {"frameCount", sprite->totalFrames()}, {"colorMode", sprite->pixelFormat() == IMAGE_RGB ? "rgba" : sprite->pixelFormat() == IMAGE_INDEXED ? "indexed" : "grayscale"},
-          {"modified", document->isModified()}, {"hasFile", document->isAssociatedToFile()}};
+          {"modified", document->isModified()}, {"hasFile", document->isAssociatedToFile()}, {"transparentIndex", sprite->pixelFormat() == IMAGE_INDEXED ? Json(sprite->transparentColor()) : Json(nullptr)}};
 }
 }
 
@@ -378,16 +383,20 @@ private:
       Json item = {{"layerId", layer->id()}, {"name", layer->name()}, {"visible", layer->isVisible()},
                    {"editable", layer->isEditable()}, {"background", layer->isBackground()},
                    {"parentId", layer->parent() == sprite->folder() ? Json(nullptr) : Json(layer->parent()->id())},
-                   {"type", layer->isImage() ? "image" : "group"}, {"version", layer->version()}};
+                    {"type", layer->isImage() ? "image" : "group"}, {"version", layer->version()}};
+      item["continuous"] = layer->isContinuous(); item["movable"] = layer->isMovable();
+      if (!layer->userData().isEmpty()) item["userData"] = {{"text", layer->userData().text()}, {"color", layer->userData().color()}};
       if (layer->isImage()) {
         auto imageLayer = static_cast<LayerImage*>(layer);
         item["opacity"] = imageLayer->opacity(); item["blendMode"] = int(imageLayer->blendMode());
         item["cels"] = Json::array();
         for (auto it = imageLayer->getCelBegin(); it != imageLayer->getCelEnd(); ++it) {
           auto cel = *it;
-          item["cels"].push_back({{"frame", cel->frame()}, {"x", cel->x()}, {"y", cel->y()}, {"opacity", cel->opacity()},
-                                 {"width", cel->image()->width()}, {"height", cel->image()->height()},
-                                 {"imageId", cel->image()->id()}, {"imageVersion", cel->image()->version()}, {"links", cel->links()}});
+          Json celInfo = {{"celId", cel->id()}, {"celDataId", cel->data()->id()}, {"frame", cel->frame()}, {"x", cel->x()}, {"y", cel->y()}, {"opacity", cel->opacity()},
+                                  {"width", cel->image()->width()}, {"height", cel->image()->height()},
+                                  {"imageId", cel->image()->id()}, {"imageVersion", cel->image()->version()}, {"links", cel->links()}};
+          if (!cel->data()->userData().isEmpty()) celInfo["userData"] = {{"text", cel->data()->userData().text()}, {"color", cel->data()->userData().color()}};
+          item["cels"].push_back(std::move(celInfo));
         }
       }
       result["layers"].push_back(item);
@@ -955,6 +964,158 @@ private:
     publishExport(path, bytes, overwrite);
     return result;
   }
+  Json canvas(Document* document, const Json& params, bool cropping) {
+    auto sprite = document->sprite();
+    int width = integer(params, "width", 1, 1024), height = integer(params, "height", 1, 1024);
+    int x = cropping ? integer(params, "x", 0, sprite->width() - 1) : 0;
+    int y = cropping ? integer(params, "y", 0, sprite->height() - 1) : 0;
+    int dx = cropping ? -x : params.contains("offsetX") ? integer(params, "offsetX", -1023, 1023) : 0;
+    int dy = cropping ? -y : params.contains("offsetY") ? integer(params, "offsetY", -1023, 1023) : 0;
+    gfx::Rect bounds(x, y, width, height);
+    require(!cropping || sprite->bounds().contains(bounds), "OUTSIDE_CANVAS", "Crop rectangle must be entirely inside the current canvas.");
+    require(!sprite->backgroundLayer(), "UNSUPPORTED_LAYER", "Canvas operations currently require transparent layers; convert the native background explicitly first.");
+    for (auto layer : sprite->layers()) editable(layer);
+    struct Plan { Layer* layer; std::vector<int> frames; int x, y; bool remove; ImageRef image; };
+    std::vector<Plan> plans;
+    std::map<ObjectId, size_t> data;
+    std::map<ObjectId, ObjectId> imageData;
+    bool loss = false, contentChanged = width != sprite->width() || height != sprite->height();
+    size_t scratch = 0;
+    for (auto cel : sprite->cels()) {
+      auto found = data.find(cel->data()->id());
+      if (found != data.end()) {
+        require(!cropping || plans[found->second].layer == cel->layer(), "SHARED_CEL_DATA", "Crop refuses cel data linked across different layers.");
+        plans[found->second].frames.push_back(cel->frame()); continue;
+      }
+      auto intersection = cel->bounds() & bounds;
+      bool cut = cropping && intersection != cel->bounds();
+      loss |= cut; contentChanged |= cut || dx || dy;
+      int nx = cut && !intersection.isEmpty() ? intersection.x + dx : cel->x() + dx;
+      int ny = cut && !intersection.isEmpty() ? intersection.y + dy : cel->y() + dy;
+      require((cropping && intersection.isEmpty()) || (nx >= -32768 && nx <= 32767 && ny >= -32768 && ny <= 32767), "OUTSIDE_NATIVE_RANGE", "Canvas shift would exceed native signed cel coordinates.");
+      data[cel->data()->id()] = plans.size();
+      plans.push_back({cel->layer(), {cel->frame()}, nx, ny, cropping && intersection.isEmpty(), {}});
+      // Separate CelData objects may still share an image. Moving is harmless;
+      // cropping via ReplaceImage would otherwise alter a different position.
+      auto previous = imageData.find(cel->image()->id());
+      require(!cropping || previous == imageData.end() || previous->second == cel->data()->id(), "SHARED_IMAGE", "Canvas crop refuses images shared by separate cel data. Make independent copies first.");
+      imageData[cel->image()->id()] = cel->data()->id();
+      if (cut && !intersection.isEmpty()) scratch += size_t(intersection.w) * intersection.h * (sprite->pixelFormat() == IMAGE_RGB ? 4 : sprite->pixelFormat() == IMAGE_GRAYSCALE ? 2 : 1);
+    }
+    auto oldMask = document->mask();
+    require(cropping || oldMask->isEmpty() || (int64_t(oldMask->bounds().x) + dx >= -32768 && int64_t(oldMask->bounds().x) + dx <= 32767 && int64_t(oldMask->bounds().y) + dy >= -32768 && int64_t(oldMask->bounds().y) + dy <= 32767), "OUTSIDE_NATIVE_RANGE", "Canvas shift would exceed supported selection origins.");
+    require(!cropping || oldMask->isEmpty() || document->isMaskVisible(), "HIDDEN_SELECTION", "Show or clear the retained hidden selection explicitly before cropping.");
+    loss |= cropping && !oldMask->isEmpty() && !bounds.contains(oldMask->bounds());
+    bool changed = contentChanged || loss || (!oldMask->isEmpty() && (dx || dy));
+    bool discard = params.contains("discardOutside") ? boolean(params, "discardOutside") : false;
+    require(!loss || discard, "WOULD_DISCARD_PIXELS", "Crop would discard cel data or selection bounds, including off-canvas data. Explicitly set discardOutside:true.");
+    require(scratch <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Canvas crop scratch exceeds 32 MiB.");
+    if (!changed) return {{"canvasChanged", false}};
+    Mask mask;
+    if (cropping && !oldMask->isEmpty()) {
+      mask.replace(gfx::Rect(0, 0, width, height)); mask.bitmap()->clear(0);
+      for (int yy = 0; yy < height; ++yy) for (int xx = 0; xx < width; ++xx)
+        mask.bitmap()->putPixel(xx, yy, oldMask->containsPoint(xx + x, yy + y));
+      mask.shrink();
+    }
+    // Finish all crop allocations before changing the model. Plans retain IDs/
+    // frames rather than removed Cel refs, so rollback reconstruction is safe.
+    for (auto& plan : plans) {
+      auto cel = plan.layer->cel(plan.frames.front());
+      if (cropping && !plan.remove) {
+        auto intersection = cel->bounds() & bounds;
+        if (intersection != cel->bounds()) plan.image.reset(doc::crop_image(cel->image(), intersection.x - cel->x(), intersection.y - cel->y(), intersection.w, intersection.h, sprite->transparentColor()));
+      }
+    }
+    Transaction transaction(UIContext::instance(), cropping ? "AI crop canvas" : "AI resize canvas (preserve pixels)", contentChanged ? ModifyDocument : DoesntModifyDocument);
+    for (auto& plan : plans) {
+      if (plan.remove) {
+        for (int frame : plan.frames) transaction.execute(new cmd::RemoveCel(plan.layer->cel(frame)));
+      } else {
+        auto cel = plan.layer->cel(plan.frames.front());
+        if (plan.image) transaction.execute(new cmd::ReplaceImage(sprite, cel->imageRef(), plan.image));
+        if (plan.x != cel->x() || plan.y != cel->y()) transaction.execute(new cmd::SetCelPosition(cel, plan.x, plan.y));
+      }
+    }
+    if (width != sprite->width() || height != sprite->height()) transaction.execute(new cmd::SetSpriteSize(sprite, width, height));
+    if (!oldMask->isEmpty()) {
+      if (cropping && !sameSelection(document, mask)) transaction.execute(new cmd::SetMask(document, &mask));
+      else if (!cropping && (dx || dy)) transaction.execute(new cmd::SetMaskPosition(document, gfx::Point(oldMask->bounds().x + dx, oldMask->bounds().y + dy)));
+    }
+    finish(transaction, document);
+    document->generateMaskBoundaries();
+    return {{"canvasChanged", true}, {"discardedOutside", loss}, {"offsetX", dx}, {"offsetY", dy}};
+  }
+  LayerFolder* destinationParent(Sprite* sprite, const Json& params, LayerFolder* fallback) {
+    if (!params.contains("parentId")) return fallback;
+    auto layer = params["parentId"].is_null() ? sprite->folder() : findLayer(sprite, integer(params, "parentId", 1, INT32_MAX));
+    require(layer->isFolder(), "INVALID_PARAMS", "parentId must identify a group, or null for root.");
+    return static_cast<LayerFolder*>(layer);
+  }
+  Layer* insertionAfter(Sprite* sprite, LayerFolder* parent, const Json& params, Layer* fallback) {
+    auto after = !params.contains("afterLayerId") ? fallback : params["afterLayerId"].is_null() ? nullptr : findLayer(sprite, integer(params, "afterLayerId", 1, INT32_MAX));
+    require(!after || after->parent() == parent, "INVALID_PARAMS", "Insertion reference must be a sibling in the destination group.");
+    require(after || !parent->getFirstLayer() || !parent->getFirstLayer()->isBackground(), "UNSUPPORTED_LAYER", "Cannot insert below a background layer.");
+    return after;
+  }
+  std::unique_ptr<Layer> cloneLayer(Sprite* sprite, Layer* source) {
+    std::unique_ptr<Layer> result(source->isImage() ? static_cast<Layer*>(new LayerImage(sprite)) : static_cast<Layer*>(new LayerFolder(sprite)));
+    result->setName(source->name()); result->setFlags(source->flags()); result->setUserData(source->userData());
+    if (source->isImage()) {
+      auto target = static_cast<LayerImage*>(result.get()), original = static_cast<LayerImage*>(source);
+      target->setOpacity(original->opacity()); target->setBlendMode(original->blendMode());
+      for (auto it = original->getCelBegin(); it != original->getCelEnd(); ++it) target->addCel(rawCelCopy(*it, (*it)->frame()));
+    } else {
+      auto folder = static_cast<LayerFolder*>(result.get());
+      for (auto child : static_cast<LayerFolder*>(source)->getLayersList()) {
+        auto copy = cloneLayer(sprite, child); folder->addLayer(copy.get()); copy.release();
+      }
+    }
+    return result;
+  }
+  Json duplicateLayer(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto source = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+    auto parent = destinationParent(sprite, params, source->parent());
+    editable(parent);
+    auto after = insertionAfter(sprite, parent, params, parent == source->parent() ? source : parent->getLastLayer());
+    int count = 0; size_t bytes = 0;
+    auto countSource = [&](auto&& visit, Layer* layer) -> void {
+      ++count; require(!layer->isBackground(), "UNSUPPORTED_LAYER", "Duplicating a background layer is not supported; convert it explicitly first.");
+      if (layer->isImage()) {
+        CelList cels; layer->getCels(cels); for (auto cel : cels) bytes += imageBytes(cel->image());
+      } else for (auto child : static_cast<LayerFolder*>(layer)->getLayersList()) visit(visit, child);
+    };
+    countSource(countSource, source);
+    require(sprite->countLayers() + count <= 128, "LIMIT_EXCEEDED", "Layer copies exceed the 128-layer limit.");
+    require(spriteBytes(sprite) + bytes <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Independent layer copies exceed the 32 MiB working limit.");
+    auto copy = cloneLayer(sprite, source);
+    copy->setName(params.contains("name") ? text(params, "name", 120) : source->name() + " Copy");
+    auto id = copy->id();
+    Transaction transaction(UIContext::instance(), "AI duplicate layer subtree");
+    transaction.execute(new cmd::AddLayer(parent, copy.get(), after)); copy.release();
+    finish(transaction, document);
+    UIContext::instance()->activeEditor()->setLayer(findLayer(sprite, id));
+    return {{"createdLayerId", id}, {"copiedLayerCount", count}};
+  }
+  Json reparentLayer(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto layer = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+    editable(layer);
+    require(layer->isMovable() && !layer->isBackground(), "UNSUPPORTED_LAYER", "Target layer is movement-locked or a background.");
+    require(params.contains("parentId"), "INVALID_PARAMS", "Supply destination parentId (null for root).");
+    auto parent = destinationParent(sprite, params, layer->parent());
+    editable(parent);
+    for (auto ancestor = static_cast<Layer*>(parent); ancestor; ancestor = ancestor->parent()) require(ancestor != layer, "LAYER_CYCLE", "Cannot put a group inside itself or its descendants.");
+    auto after = insertionAfter(sprite, parent, params, parent == layer->parent() ? layer->getPrevious() : parent->getLastLayer());
+    require(after != layer, "INVALID_PARAMS", "A layer cannot be its own insertion reference.");
+    if (parent == layer->parent() && after == layer->getPrevious()) return {{"reparented", false}};
+    Transaction transaction(UIContext::instance(), "AI reparent layer");
+    if (parent == layer->parent()) transaction.execute(new cmd::MoveLayer(layer, after));
+    else transaction.execute(new automation::ReparentLayer(layer, parent, after));
+    finish(transaction, document);
+    return {{"reparented", true}};
+  }
   Layer* celLayer(Document* document, const Json& params, bool allowLinked = false) {
     auto sprite = document->sprite();
     auto target = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
@@ -1270,6 +1431,55 @@ private:
     finish(transaction, document);
     document->generateMaskBoundaries();
   }
+  void advancedSelection(Document* document, const Json& params, bool polygon) {
+    auto sprite = document->sprite();
+    auto mode = params.contains("mode") ? text(params, "mode", 16) : "replace";
+    require(mode == "replace" || mode == "add" || mode == "subtract" || mode == "intersect", "INVALID_PARAMS", "mode must be replace, add, subtract, or intersect.");
+    Mask mask; mask.replace(sprite->bounds()); mask.bitmap()->clear(0);
+    if (polygon) {
+      require(params.contains("vertices") && params["vertices"].is_array() && params["vertices"].size() >= 3 && params["vertices"].size() <= 128, "INVALID_PARAMS", "Polygon requires 3 to 128 vertices.");
+      std::vector<gfx::Point> points, distinct;
+      gfx::Rect bounds;
+      for (const auto& vertex : params["vertices"]) {
+        gfx::Point p(integer(vertex, "x", 0, sprite->width() - 1), integer(vertex, "y", 0, sprite->height() - 1));
+        points.push_back(p); bounds |= gfx::Rect(p.x, p.y, 1, 1);
+        if (std::find(distinct.begin(), distinct.end(), p) == distinct.end()) distinct.push_back(p);
+      }
+      require(distinct.size() >= 3, "INVALID_PARAMS", "Polygon requires at least three distinct vertices.");
+      require(size_t(bounds.w) * bounds.h * points.size() <= 8 * 1024 * 1024, "LIMIT_EXCEEDED", "Polygon exceeds 8,388,608 pixel-edge tests.");
+      // Even-odd fill at pixel centers, plus inclusive native one-pixel edges.
+      // Self-intersections are explicit even-odd regions, never antialiased.
+      for (int y = bounds.y; y < bounds.y2(); ++y) for (int x = bounds.x; x < bounds.x2(); ++x) {
+        bool inside = false;
+        double px = x + 0.5, py = y + 0.5;
+        for (size_t i = 0, j = points.size() - 1; i < points.size(); j = i++) {
+          const auto& a = points[i]; const auto& b = points[j];
+          if ((a.y > py) != (b.y > py) && px < a.x + (py - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
+        }
+        if (inside) mask.bitmap()->putPixel(x, y, 1);
+      }
+      for (size_t i = 0; i < points.size(); ++i) {
+        const auto& a = points[i]; const auto& b = points[(i + 1) % points.size()];
+        doc::draw_line(mask.bitmap(), a.x, a.y, b.x, b.y, 1);
+      }
+    } else {
+      int x = integer(params, "x", 0, sprite->width() - 1), y = integer(params, "y", 0, sprite->height() - 1);
+      int width = integer(params, "width", 1, 1024), height = integer(params, "height", 1, 1024);
+      auto bits = text(params, "bits", 262144);
+      require(sprite->bounds().contains(gfx::Rect(x, y, width, height)), "OUTSIDE_CANVAS", "Bitmap selection must fit the canvas.");
+      require(bits.size() == size_t(width * height) && bits.find_first_not_of("01") == std::string::npos, "INVALID_PARAMS", "Mask bits must be exactly width*height binary digits, row-major (at most 262,144).");
+      for (int yy = 0; yy < height; ++yy) for (int xx = 0; xx < width; ++xx) mask.bitmap()->putPixel(x + xx, y + yy, bits[yy * width + xx] == '1');
+    }
+    if (mode != "replace") for (int y = 0; y < sprite->height(); ++y) for (int x = 0; x < sprite->width(); ++x) {
+      bool old = document->isMaskVisible() && document->mask()->containsPoint(x, y), added = mask.containsPoint(x, y);
+      mask.bitmap()->putPixel(x, y, mode == "add" ? old || added : mode == "subtract" ? old && !added : old && added);
+    }
+    mask.shrink();
+    if (sameSelection(document, mask)) return;
+    Transaction transaction(UIContext::instance(), polygon ? "AI polygon selection" : "AI bitmap selection", DoesntModifyDocument);
+    transaction.execute(new cmd::SetMask(document, &mask));
+    finish(transaction, document); document->generateMaskBoundaries();
+  }
   Json renderSelection(Document* document, const Json& params) {
     auto sprite = document->sprite();
     int frame = integer(params, "frame", 0, sprite->lastFrame());
@@ -1309,7 +1519,8 @@ private:
       // Large signed cel offsets can otherwise make CropCel allocate gigabytes
       // BEFORE finish() can enforce the working limit. Bound the union up front.
       auto bounds = cel->bounds() | gfx::Rect(region.bounds()).offset(position);
-      uint64_t grown = uint64_t(bounds.w) * uint64_t(bounds.h) * 4;
+      auto format = document->sprite()->pixelFormat();
+      uint64_t grown = uint64_t(bounds.w) * uint64_t(bounds.h) * (format == IMAGE_RGB ? 4 : format == IMAGE_GRAYSCALE ? 2 : 1);
       require(grown <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Patch would grow an off-canvas cel beyond the 32 MiB working limit.");
       std::vector<Image*> images; document->sprite()->getImages(images);
       uint64_t total = grown;
@@ -1357,6 +1568,100 @@ private:
     }
     auto label = params.contains("label") ? text(params, "label", 120) : "AI pixel edit";
     applyPatch(document, target, frame, patch, region, gfx::Point(bounds.x, bounds.y), label);
+  }
+  Layer* indexedLayer(Document* document, const Json& params) {
+    require(document->sprite()->pixelFormat() == IMAGE_INDEXED, "UNSUPPORTED_COLOR_MODE", "This operation requires an indexed sprite.");
+    auto layer = celLayer(document, params);
+    independentImage(document->sprite(), layer->cel(integer(params, "frame", 0, document->sprite()->lastFrame())));
+    return layer;
+  }
+  color_t indexedColor(Sprite* sprite, int frame, const Json& params) {
+    int index = integer(params, "index", 0, 255);
+    require(index == sprite->transparentColor() || index < sprite->palette(frame)->size(), "PALETTE_INDEX_OUT_OF_RANGE", "Index must exist in this frame's palette, or be the sprite's transparent index.");
+    return index;
+  }
+  void indexedPixels(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto layer = indexedLayer(document, params);
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    auto selection = paintSelection(document, params);
+    require(params.contains("pixels") && params["pixels"].is_array() && !params["pixels"].empty() && params["pixels"].size() <= 16384, "INVALID_PARAMS", "Provide 1 to 16,384 indexed pixels.");
+    std::map<std::pair<int, int>, color_t> pixels;
+    gfx::Rect bounds;
+    for (const auto& pixel : params["pixels"]) {
+      int x = integer(pixel, "x", 0, sprite->width() - 1), y = integer(pixel, "y", 0, sprite->height() - 1);
+      auto paint = indexedColor(sprite, frame, pixel);
+      if (selection && !selection->containsPoint(x, y)) continue;
+      pixels[{x, y}] = paint; bounds |= gfx::Rect(x, y, 1, 1);
+    }
+    if (pixels.empty()) return;
+    ImageRef patch(Image::create(IMAGE_INDEXED, bounds.w, bounds.h));
+    patch->setMaskColor(sprite->transparentColor()); patch->clear(sprite->transparentColor());
+    auto cel = layer->cel(frame);
+    gfx::Region region;
+    for (const auto& pixel : pixels) {
+      int x = pixel.first.first, y = pixel.first.second;
+      auto old = cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) : sprite->transparentColor();
+      if (old == pixel.second) continue;
+      patch->putPixel(x - bounds.x, y - bounds.y, pixel.second);
+      region |= gfx::Region(gfx::Rect(x - bounds.x, y - bounds.y, 1, 1));
+    }
+    applyPatch(document, layer, frame, patch, region, bounds.origin(), "AI exact indexed pixels");
+  }
+  void brushStroke(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto layer = sprite->pixelFormat() == IMAGE_INDEXED ? indexedLayer(document, params) : paintLayer(document, params);
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    auto selection = paintSelection(document, params);
+    require(params.contains("color") != params.contains("index"), "INVALID_PARAMS", "Supply exactly one RGBA color or palette index.");
+    require(sprite->pixelFormat() == IMAGE_INDEXED ? params.contains("index") : params.contains("color"), "UNSUPPORTED_COLOR_MODE", "Indexed sprites require an exact index; RGBA sprites require color. No conversion is performed.");
+    auto paint = sprite->pixelFormat() == IMAGE_INDEXED ? indexedColor(sprite, frame, params) : color(params);
+    require(params.contains("brush") && params["brush"].is_object(), "INVALID_PARAMS", "Supply a bitmap brush.");
+    const auto& brush = params["brush"];
+    int width = integer(brush, "width", 1, 32), height = integer(brush, "height", 1, 32);
+    auto bits = text(brush, "bits", 1024);
+    require(bits.size() == size_t(width * height) && bits.find_first_not_of("01") == std::string::npos, "INVALID_PARAMS", "Brush bits must be exactly width*height binary digits, row-major.");
+    int ax = brush.contains("anchorX") ? integer(brush, "anchorX", 0, width - 1) : width / 2;
+    int ay = brush.contains("anchorY") ? integer(brush, "anchorY", 0, height - 1) : height / 2;
+    std::vector<gfx::Point> offsets;
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) if (bits[y * width + x] == '1') offsets.emplace_back(x - ax, y - ay);
+    require(!offsets.empty(), "INVALID_PARAMS", "Brush must contain at least one set bit.");
+    require(params.contains("points") && params["points"].is_array() && !params["points"].empty() && params["points"].size() <= 1024, "INVALID_PARAMS", "Supply 1 to 1024 stroke points.");
+    bool clip = params.contains("clipToCanvas") ? boolean(params, "clipToCanvas") : false;
+    std::vector<gfx::Point> points;
+    for (const auto& point : params["points"]) {
+      int x = integer(point, "x", 0, sprite->width() - 1), y = integer(point, "y", 0, sprite->height() - 1);
+      require(clip || sprite->bounds().contains(gfx::Rect(x - ax, y - ay, width, height)), "OUTSIDE_CANVAS", "Brush footprint would clip. Explicitly set clipToCanvas:true.");
+      points.emplace_back(x, y);
+    }
+    ImageRef centers(Image::create(IMAGE_BITMAP, sprite->width(), sprite->height())); centers->clear(0);
+    centers->putPixel(points.front().x, points.front().y, 1);
+    for (size_t i = 1; i < points.size(); ++i) doc::draw_line(centers.get(), points[i - 1].x, points[i - 1].y, points[i].x, points[i].y, 1);
+    size_t count = 0;
+    for (int y = 0; y < sprite->height(); ++y) for (int x = 0; x < sprite->width(); ++x) count += centers->getPixel(x, y) != 0;
+    require(count * offsets.size() <= 8 * 1024 * 1024, "LIMIT_EXCEEDED", "Brush stroke exceeds 8,388,608 stamp-pixel visits.");
+    ImageRef painted(Image::create(IMAGE_BITMAP, sprite->width(), sprite->height())); painted->clear(0);
+    for (int y = 0; y < sprite->height(); ++y) for (int x = 0; x < sprite->width(); ++x) if (centers->getPixel(x, y))
+      for (const auto& offset : offsets) if (sprite->bounds().contains(x + offset.x, y + offset.y) && (!selection || selection->containsPoint(x + offset.x, y + offset.y))) painted->putPixel(x + offset.x, y + offset.y, 1);
+    ImageRef patch(Image::create(sprite->pixelFormat(), sprite->width(), sprite->height()));
+    auto clear = sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0);
+    patch->setMaskColor(sprite->transparentColor()); patch->clear(clear);
+    auto cel = layer->cel(frame);
+    gfx::Region region;
+    for (int y = 0; y < sprite->height(); ++y) {
+      int start = -1;
+      for (int x = 0; x <= sprite->width(); ++x) {
+        bool changed = false;
+        if (x < sprite->width() && painted->getPixel(x, y)) {
+          auto old = cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) : clear;
+          changed = old != paint;
+          if (changed) patch->putPixel(x, y, paint);
+        }
+        if (changed && start < 0) start = x;
+        if (!changed && start >= 0) { region |= gfx::Region(gfx::Rect(start, y, x - start, 1)); start = -1; }
+      }
+    }
+    applyPatch(document, layer, frame, patch, region, gfx::Point(0, 0), "AI bitmap brush stroke");
   }
   void draw(Document* document, const Json& params, const std::string& method) {
     auto sprite = document->sprite();
@@ -1580,11 +1885,20 @@ private:
       if (method == "update_layer") {
         // Explicit unlocking is allowed, but not edits hidden inside an unlock.
         editable(layer->parent());
-        bool hasProperties = params.contains("name") || params.contains("opacity") || params.contains("visible");
+        bool hasProperties = params.contains("name") || params.contains("opacity") || params.contains("visible") || params.contains("blendMode");
         require(layer->isEditable() || !hasProperties, "LAYER_LOCKED", "Unlock the layer in a separate request before modifying its properties.");
         require(hasProperties || params.contains("editable"), "INVALID_PARAMS", "Supply at least one layer property.");
         auto name = params.contains("name") ? text(params, "name", 120) : layer->name();
         int opacity = -1;
+        int blend = -1;
+        if (params.contains("blendMode")) {
+          require(layer->isImage() && !layer->isBackground(), "UNSUPPORTED_LAYER", "Blend modes require a transparent image layer.");
+          static const std::vector<std::string> names = {"normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"};
+          auto value = text(params, "blendMode", 24);
+          auto found = std::find(names.begin(), names.end(), value);
+          require(found != names.end(), "INVALID_PARAMS", "Unknown native blend mode.");
+          blend = std::distance(names.begin(), found);
+        }
         if (params.contains("opacity")) {
           require(layer->isImage() && !layer->isBackground(), "UNSUPPORTED_LAYER", "Opacity changes require a transparent image layer.");
           opacity = integer(params, "opacity", 0, 255);
@@ -1593,12 +1907,14 @@ private:
         for (auto entry : {std::make_pair("visible", LayerFlags::Visible), std::make_pair("editable", LayerFlags::Editable)})
           if (params.contains(entry.first)) flags = boolean(params, entry.first) ? flags | int(entry.second) : flags & ~int(entry.second);
         bool changed = name != layer->name() || flags != int(layer->flags()) ||
-          (opacity >= 0 && opacity != static_cast<LayerImage*>(layer)->opacity());
+          (opacity >= 0 && opacity != static_cast<LayerImage*>(layer)->opacity()) ||
+          (blend >= 0 && blend != int(static_cast<LayerImage*>(layer)->blendMode()));
         if (changed) {
           Transaction transaction(UIContext::instance(), "AI update layer");
           if (name != layer->name()) transaction.execute(new cmd::SetLayerName(layer, name));
           if (flags != int(layer->flags())) transaction.execute(new cmd::SetLayerFlags(layer, LayerFlags(flags)));
           if (opacity >= 0 && opacity != static_cast<LayerImage*>(layer)->opacity()) transaction.execute(new cmd::SetLayerOpacity(static_cast<LayerImage*>(layer), opacity));
+          if (blend >= 0 && blend != int(static_cast<LayerImage*>(layer)->blendMode())) transaction.execute(new cmd::SetLayerBlendMode(static_cast<LayerImage*>(layer), BlendMode(blend)));
           finish(transaction, document);
         }
       } else if (method == "move_layer") {
@@ -1701,9 +2017,9 @@ private:
   }
   Json dispatch(const std::string& method, const Json& params) {
     auto ctx = UIContext::instance();
-    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection"};
+    static const std::vector<std::string> methods = {"status", "set_paused", "list_documents", "inspect", "render", "create", "open", "set_pixels", "undo", "redo", "save", "create_layer", "update_layer", "move_layer", "remove_layer", "add_frame", "remove_frame", "set_frame_duration", "draw_shape", "draw_stroke", "flood_fill", "list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "export_png", "export_sprite_sheet", "set_palette", "remove_palette", "create_tag", "update_tag", "remove_tag", "export_animation", "update_cel", "transform_cel", "unlink_cel", "set_selection", "modify_selection", "render_selection", "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel", "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas", "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection", "set_bitmap_selection"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.7.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.8.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -1731,7 +2047,9 @@ private:
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
       int width = integer(params, "width", 1, 1024), height = integer(params, "height", 1, 1024);
-      std::unique_ptr<Sprite> sprite(Sprite::createBasicSprite(IMAGE_RGB, width, height, 256));
+      auto mode = params.contains("colorMode") ? text(params, "colorMode", 16) : "rgba";
+      require(mode == "rgba" || mode == "indexed", "INVALID_PARAMS", "New sprites support rgba or indexed colorMode.");
+      std::unique_ptr<Sprite> sprite(Sprite::createBasicSprite(mode == "indexed" ? IMAGE_INDEXED : IMAGE_RGB, width, height, 256));
       std::unique_ptr<Document> document(new Document(sprite.get())); sprite.release();
       document->setFilename(text(params, "name", 120));
       document->setContext(ctx);
@@ -1768,13 +2086,24 @@ private:
     // Check and mutate under the same lock, on the same UI tick.
     ContextWriter writer(ctx, 0);
     checkRevision(document, params);
-    if (method == "copy_cel" || method == "duplicate_frames" || method == "reorder_frames" || method == "edit_cels" || method == "set_frame_durations" || method == "transform_selection")
-      documentViewsIdle(document);
+    documentViewsIdle(document);
     SelectionGuard selection(document);
     Json extra = Json::object();
     if (method == "set_pixels") {
       // setPixels owns its transaction but reuses this writer lock.
       setPixels(document, params);
+    } else if (method == "resize_canvas" || method == "crop_canvas") {
+      extra = canvas(document, params, method == "crop_canvas");
+    } else if (method == "duplicate_layer") {
+      extra = duplicateLayer(document, params);
+    } else if (method == "reparent_layer") {
+      extra = reparentLayer(document, params);
+    } else if (method == "draw_brush_stroke") {
+      brushStroke(document, params);
+    } else if (method == "set_indexed_pixels") {
+      indexedPixels(document, params);
+    } else if (method == "set_polygon_selection" || method == "set_bitmap_selection") {
+      advancedSelection(document, params, method == "set_polygon_selection");
     } else if (method == "draw_shape" || method == "draw_stroke" || method == "flood_fill") {
       draw(document, params, method);
     } else if (method == "create_layer" || method == "update_layer" || method == "move_layer" || method == "remove_layer") {
@@ -1818,7 +2147,7 @@ private:
     selection.committed = true;
     // Match native New Layer/New Frame behavior, including the user's existing
     // auto-show preference. Visible timeline rows are safe for group layers.
-    if (method == "create_layer" || method == "add_frame" || method == "duplicate_frames") App::instance()->mainWindow()->popTimeline();
+    if (method == "create_layer" || method == "add_frame" || method == "duplicate_frames" || method == "duplicate_layer" || method == "reparent_layer") App::instance()->mainWindow()->popTimeline();
     if (method == "set_palette" || method == "remove_palette" || method == "copy_cel" || method == "undo" || method == "redo") {
       set_current_palette(document->sprite()->palette(ctx->activeEditor()->frame()), false);
       ui::Manager::getDefault()->invalidate();

@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.7.0.** This is an independent development project, not an
+**Source alpha — v0.8.0.** This is an independent development project, not an
 official LibreSprite release. It requires building the custom editor; a stock
 LibreSprite installation does not contain this bridge. No prebuilt app bundle
 is currently provided.
@@ -82,11 +82,15 @@ masks, selection-aware drawing, and overlap-safe selection moves/copies are supp
 Whole-cel copy between existing layers/frames, ordered frame-range duplication,
 tag-safe frame reordering, atomic cel/timing batches, and selected-region
 flips/rotations across explicit frames are also available.
+Canvas resize preserves off-canvas pixels; explicit guarded cropping is undoable
+across all frames/layers. Independent layer/group copies, cycle-safe reparenting,
+native blend modes, polygon/bitmap masks, custom bitmap brushes, and exact
+indexed-color painting are now included.
 
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **51 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **59 tools**, and limitations.
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.
@@ -116,6 +120,8 @@ tools never automatically close or kill a window that might hold unsaved work.
   or uncertain result, reconnect and inspect rather than blindly retrying.
 - Native edits are undoable. Saves/exports publish atomically with overwrite
   refused unless explicitly requested.
+- All document edits require idle target views (finish drawing, transformations,
+  or playback first). Crops refuse pixel/mask loss unless explicitly authorized.
 - File access stays inside the configured asset root. The bridge is a local
   private Unix socket, not a public network service.
 - Current bounds include 1024×1024 canvases, 256 frames, and 128 layers. Some
@@ -128,18 +134,19 @@ editing important artwork.
 
 ## Next priorities
 
-1. Remaining editing gaps: canvas operations, richer selections/layers/brushes.
-2. Easier installation and reproducible Apple Silicon application packaging.
-3. Automated native builds/regressions and validated Linux support.
+1. Easier installation, setup diagnostics, and reproducible Apple Silicon
+   application packaging.
+2. Automated native builds/regressions and validated Linux support.
 
-The v0.6.0 user-control/navigation milestone was reviewed and approved. The
-v0.7.0 animation-workflow milestone is next for manual review. Run
-`node scripts/demo-animation.mjs` for a separate editor with a generated saved
-five-frame animation and a connected pause-button monitor. One native Undo
-removes the entire final multi-frame cel batch. See
-[the step 2 test checklist](docs/testing-v0.7.md). Subsequent milestones should
-wait until this review is approved. The earlier
-[step 1 checklist](docs/testing-v0.6.md) and demo remain available.
+The v0.6.0 user-control, v0.7.0 animation, and v0.8.0 editing milestones were
+reviewed and approved. Run
+`node scripts/demo-editing.mjs` for a separate editor with generated RGBA/indexed
+sprites and saved before/after crop files. One native Undo restores the canvas,
+discarded pixels on all frames/layers, and selection together. See
+[the step 3 test checklist](docs/testing-v0.8.md). Packaging is the next milestone;
+stop again for user testing before moving on to platform work. The earlier
+[step 1](docs/testing-v0.6.md) and
+[step 2](docs/testing-v0.7.md) checklists and demos remain available.
 
 See [the development milestones](CHANGELOG.md) for what is already implemented.
 Bug reports and focused contributions are welcome through the

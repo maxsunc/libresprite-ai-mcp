@@ -1,5 +1,27 @@
 # Development milestones
 
+## 0.8.0 — Canvas, layers, masks, and painting (2026-10-08)
+
+- 59 MCP tools: lossless canvas resize/shifts, explicit all-frame canvas crop,
+  independent layer/group duplication, cycle-safe reparenting, polygon/bitmap
+  masks, custom bitmap brush strokes, and exact indexed pixel painting.
+- `create` optionally makes indexed sprites; `update_layer` exposes all 16 native
+  blend modes. Inspection reports transparent palette index, layer flags, cel/
+  cel-data identities and nonempty user data (also fingerprinted for revisions).
+- Canvas shrink retains off-canvas data; cropping refuses any cel/mask-bounds
+  loss until `discardOutside:true`. Crop is one native undo step for all frames,
+  cels, discarded data, size, and mask; links/timing/palettes/user data preserved.
+- Subtree copies keep properties/flags/raw pixels but make every cel independent.
+  Reparenting retains all IDs/data and refuses cycles, locks, and backgrounds.
+- Bitmap brushes use explicit row-major binary footprints/anchors, native path
+  lines, selection-aware replacement/erasure, opt-in clipping and bounded work.
+  Indexed painting uses palette indices without conversion, blending, or remapping.
+- All document mutations now refuse busy target views; new operations prevalidate
+  targets/data/work bounds and preserve undo/redo history when unchanged.
+- Adds focused disposable-GUI/native-file regressions and a real MCP review demo.
+  Steps 1, 2, and 3 were user-approved. Packaging is next, with a separate review
+  before platform work begins.
+
 ## 0.7.0 — Atomic animation workflows (2026-10-08)
 
 - 51 MCP tools: whole-cel copy/paste within one sprite, ordered frame duplication,
@@ -17,7 +39,7 @@
   transaction, preserve sparse mask holes, handle overlapping/transparent
   samples, and refuse clipping, hidden/absent selections or implicit unlinking.
 - Adds aggregate scratch/growth guards, disposable-GUI/native-file regressions,
-  and a real MCP review demo. Step 1 was user-approved; step 2 awaits review.
+  and a real MCP review demo. Steps 1 and 2 were user-approved.
 - Fixes spurious stale revisions when upstream background recovery initializes
   new layer/image versions from 0 to 1 without changing data; native unit tests
   retain first-edit property and higher-version detection.

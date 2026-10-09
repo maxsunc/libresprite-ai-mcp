@@ -8,6 +8,34 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RepositoryMetadataTest(unittest.TestCase):
+    def test_milestone_versions_are_consistent(self):
+        version = json.loads((ROOT / "package.json").read_text())["version"]
+        lock = json.loads((ROOT / "package-lock.json").read_text())
+        self.assertEqual(lock["version"], version)
+        self.assertEqual(lock["packages"][""]["version"], version)
+        server = (ROOT / "src/server.ts").read_text()
+        bridge = (ROOT / "vendor/libresprite/src/app/automation/bridge.cpp").read_text()
+        self.assertIn(f'version: "{version}"', server)
+        self.assertIn(f'{{"bridgeVersion", "{version}"}}', bridge)
+        self.assertIn(f"Source alpha — v{version}", (ROOT / "README.md").read_text())
+
+    def test_tool_catalog_matches_native_methods_and_documentation(self):
+        server = (ROOT / "src/server.ts").read_text()
+        bridge = (ROOT / "vendor/libresprite/src/app/automation/bridge.cpp").read_text()
+        tools = re.findall(r'registerTool\("(libresprite_[a-z_]+)"', server)
+        for operations in re.findall(r'for \(const operation of \[([^]]+)\] as const\) server.registerTool\(`libresprite_\$\{operation\}`', server):
+            tools.extend("libresprite_" + operation for operation in re.findall(r'"([a-z_]+)"', operations))
+        self.assertEqual(len(tools), len(set(tools)))
+        block = re.search(r'static const std::vector<std::string> methods = \{([^}]+)\}', bridge).group(1)
+        methods = set(re.findall(r'"([a-z_]+)"', block))
+        expected = ({tool[len("libresprite_"):] for tool in tools} - {"launch", "connect"}) | {"status"}
+        self.assertEqual(methods, expected)
+        docs = (ROOT / "docs/live-bridge.md").read_text()
+        self.assertIn(f"**{len(tools)} tools**", docs)
+        for tool in tools:
+            with self.subTest(tool=tool):
+                self.assertIn(tool, docs)
+
     def test_full_gpl_text_matches_preserved_upstream_copy(self):
         self.assertEqual((ROOT / "LICENSE").read_bytes(), (ROOT / "vendor/libresprite/LICENSE.txt").read_bytes())
         self.assertEqual(json.loads((ROOT / "package.json").read_text())["license"], "GPL-2.0-only")

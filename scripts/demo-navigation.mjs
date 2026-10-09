@@ -20,7 +20,7 @@ const transport = new StdioClientTransport({
   env: { ...environment, LIBRESPRITE_SOCKET: path.join(directory, "b.sock"), LIBRESPRITE_ASSET_ROOT: assets },
   stderr: "pipe",
 });
-const client = new Client({ name: "libresprite-navigation-review", version: "0.7.0" });
+const client = new Client({ name: "libresprite-navigation-review", version: "0.8.0" });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let stopping = false;
 process.once("SIGINT", () => { stopping = true; });
@@ -41,7 +41,7 @@ async function target(documentId) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 51);
+  assert.ok((await client.listTools()).tools.some((tool) => tool.name === "libresprite_activate_document"));
   const launched = await request("launch");
   const deadline = Date.now() + 15_000;
   let status;
@@ -49,7 +49,7 @@ try {
     try { status = await request("connect"); break; }
     catch (error) { if (Date.now() > deadline) throw error; await wait(100); }
   }
-  assert.equal(status.bridgeVersion, "0.7.0");
+  assert.ok(status.methods.includes("activate_document"));
   await request("set_paused", { paused: false });
   const sprites = [];
   for (const [name, color] of [["Step 1 review A", { r: 60, g: 160, b: 220, a: 255 }], ["Step 1 review B", { r: 235, g: 150, b: 60, a: 255 }]]) {
@@ -76,7 +76,7 @@ try {
   active = (await request("list_documents")).activeDocumentId;
   await request("activate_document", { ...await target(a.documentId), expectedActiveDocumentId: active });
   await request("set_paused", { paused: true });
-  const review = { ...launched, bridgeVersion: "0.7.0", sprites, initialActiveDocumentId: a.documentId };
+  const review = { ...launched, bridgeVersion: status.bridgeVersion, sprites, initialActiveDocumentId: a.documentId };
   await writeFile(path.join(directory, "review.json"), JSON.stringify(review, null, 2) + "\n");
   console.log(JSON.stringify(review, null, 2));
   console.log("READY: A and B are saved generated test sprites. Agent is connected and paused. Click Resume, then Pause in the bottom-right status bar. This script only monitors status and verifies a user pause cannot be remotely overridden; it makes NO further sprite/navigation edits. Ctrl+C disconnects and leaves the editor open.");
