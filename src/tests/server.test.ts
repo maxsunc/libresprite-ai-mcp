@@ -47,7 +47,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 66);
+    assert.equal(tools.length, 67);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -67,7 +67,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(localPause.isError, true);
     assert.equal(JSON.parse((localPause.content as Array<{ text: string }>)[0]!.text).code, "USER_PAUSED");
     assert.equal(tools.find((tool) => tool.name === "libresprite_close_document")?.annotations?.destructiveHint, true);
-    for (const method of ["edit_pixels", "translate_regions"]) {
+    for (const method of ["edit_pixels", "translate_regions", "stamp_region"]) {
       const annotations = tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations;
       assert.equal(annotations?.readOnlyHint, false);
       assert.equal(annotations?.destructiveHint, true);
@@ -79,6 +79,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["create", { width: 16, height: 16, colorMode: "indexed" }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 2, width: 4, height: 2 }],
       ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 8, height: 8, seed: { x: 1, y: 1 } }],
+      ["stamp_region", { ...target, mode: "replace", source: { layerId: 1, frame: 0, x: -1, y: 2, width: 3, height: 2 }, edits: [{ layerId: 2, frame: 0, x: 1, y: 2 }] }],
       ["resize_canvas", { ...target, width: 8, height: 12 }],
       ["crop_canvas", { ...target, x: 1, y: 2, width: 8, height: 8 }],
       ["duplicate_layer", { ...target, layerId: 1, parentId: null }],
@@ -145,6 +146,8 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "read_pixels")?.params.encoding, "runs");
     assert.equal(requests.find((item) => item.method === "extract_mask")?.params.criterion, "nontransparent");
     assert.equal(requests.find((item) => item.method === "extract_mask")?.params.preview, true);
+    assert.equal(requests.find((item) => item.method === "stamp_region")?.params.dryRun, false);
+    assert.equal((await client.callTool({ name: "libresprite_stamp_region", arguments: { ...target, mode: "blend", dryRun: true, source: { path: "part.png", x: 0, y: 0, width: 2, height: 2 }, maskBits: "1001", expectedSourceHash: "a".repeat(40), edits: [{ layerId: 2, frame: 0, x: 1, y: 2 }] } })).isError, undefined);
     const maskJson = await client.callTool({ name: "libresprite_extract_mask", arguments: { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, criterion: "value", value: 4294967295, preview: false } });
     assert.equal(maskJson.isError, undefined);
     assert.equal((maskJson.content as Array<{ type: string }>).some((item) => item.type === "image"), false);
@@ -201,6 +204,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
+      ["stamp_region", { ...target, source: { path: "part.png", x: 0, y: 0, width: 1, height: 1 }, edits: [{ layerId: 1, frame: 0, x: 0, y: 0 }] }],
+      ["stamp_region", { ...target, mode: "replace", source: { path: "part.png", layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1 }, edits: [{ layerId: 1, frame: 0, x: 0, y: 0 }] }],
+      ["stamp_region", { ...target, mode: "replace", source: { path: "part.png", x: 0, y: 0, width: 1, height: 1 }, edits: [] }],
+      ["stamp_region", { ...target, mode: "replace", source: { path: "part.png", x: 0, y: 0, width: 1, height: 1 }, expectedSourceHash: "invalid", edits: [{ layerId: 1, frame: 0, x: 0, y: 0 }] }],
       ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 0, width: 1, height: 1 }],
       ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, connectivity: 6 }],
       ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, value: 4294967296 }],

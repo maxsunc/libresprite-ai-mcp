@@ -9,6 +9,7 @@
 // Updated 2026-10-09: atomic explicit multi-frame pixel and masked-region correction.
 // Updated 2026-10-11: bounded exact native cel pixel reads, including off-canvas samples.
 // Updated 2026-10-11: read-only raw-value/alpha masks and seeded connected components.
+// Updated 2026-10-11: guarded atomic raw-region/PNG stamping with source snapshots.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -1823,8 +1824,8 @@ private:
     return cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) :
            sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0);
   }
-  void correctionLimits(Sprite* sprite, const std::vector<CorrectionPatch>& patches) {
-    uint64_t scratch = 0, predicted = spriteBytes(sprite);
+  void correctionLimits(Sprite* sprite, const std::vector<CorrectionPatch>& patches, size_t extraScratch = 0) {
+    uint64_t scratch = extraScratch, predicted = spriteBytes(sprite);
     for (const auto& patch : patches) if (!patch.area.isEmpty()) {
       scratch += uint64_t(calculate_rowstride_bytes(sprite->pixelFormat(), patch.area.w)) * patch.area.h;
       auto cel = patch.layer->cel(patch.frame);
@@ -1984,6 +1985,104 @@ private:
       correctionRegion(sprite, patch);
     }
     return commitCorrections(document, params, patches, "AI atomic masked-region correction");
+  }
+  Json stampRegion(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto mode = text(params, "mode", 24);
+    require(mode == "replace" || mode == "nontransparent" || mode == "blend", "INVALID_PARAMS", "Choose explicit mode: replace, nontransparent or blend.");
+    require(sprite->pixelFormat() != IMAGE_INDEXED || mode != "blend", "UNSUPPORTED_COLOR_MODE", "Indexed stamping never blends or remaps palette indices.");
+    require(params.contains("source") && params["source"].is_object(), "INVALID_PARAMS", "Supply an explicit same-sprite region OR root-relative PNG source.");
+    const auto& source = params["source"];
+    bool png = source.contains("path");
+    require(png ? !source.contains("layerId") && !source.contains("frame") : source.contains("layerId") && source.contains("frame"),
+            "INVALID_PARAMS", "Choose source.path OR source.layerId/frame, never both.");
+    auto sourceArea = pixelRect(source, 262144, !png);
+    require(params.contains("edits") && params["edits"].is_array() && !params["edits"].empty() && params["edits"].size() <= 256,
+            "INVALID_PARAMS", "Supply 1 to 256 explicit unique layer/frame destinations.");
+    require(size_t(sourceArea.w) * sourceArea.h * params["edits"].size() <= MaxPixels,
+            "LIMIT_EXCEEDED", "Stamping exceeds 1,048,576 aggregate destination samples.");
+    std::string bits;
+    if (params.contains("maskBits")) {
+      bits = text(params, "maskBits", 262144);
+      require(automation::validCorrectionMask(sourceArea.w, sourceArea.h, bits), "INVALID_PARAMS", "maskBits must be a nonempty binary source-sized bitmap.");
+    }
+    std::vector<CorrectionPatch> patches;
+    for (const auto& entry : params["edits"]) {
+      auto layer = celLayer(document, entry); int frame = integer(entry, "frame", 0, sprite->lastFrame());
+      independentImage(sprite, layer->cel(frame));
+      for (const auto& patch : patches)
+        require(patch.layer != layer || patch.frame != frame, "INVALID_PARAMS", "Each layer/frame can occur only once per stamping batch.");
+      gfx::Rect destination(integer(entry, "x", 0, sprite->width() - 1), integer(entry, "y", 0, sprite->height() - 1), sourceArea.w, sourceArea.h);
+      require(sprite->bounds().contains(destination), "OUTSIDE_CANVAS", "The whole stamp footprint must fit each destination canvas; clipping is refused.");
+      patches.push_back({layer, frame, destination, {}, {}, 0});
+    }
+    std::unique_ptr<Document> loaded;
+    Sprite* sourceSprite = sprite;
+    RawTarget sourceTarget{nullptr, 0, nullptr};
+    Json sourceInfo = source;
+    if (png) {
+      auto path = filePath(source, false);
+      require(path.extension() == ".png", "UNSUPPORTED_FORMAT", "Asset stamping accepts PNG sources only.");
+      loaded = loadAsset(path); sourceSprite = loaded->sprite();
+      require(sourceSprite->bounds().contains(sourceArea), "OUTSIDE_CANVAS", "PNG source rectangle must fit the decoded image.");
+      auto layer = sourceSprite->indexToLayer(LayerIndex(0));
+      require(layer && layer->isImage() && sourceSprite->totalFrames() == 1 && sourceSprite->countLayers() == 1,
+              "UNSUPPORTED_FORMAT", "PNG stamp must decode to one native image layer/frame.");
+      sourceTarget = {layer, 0, layer->cel(0)};
+      sourceInfo["path"] = path.lexically_relative(m_root).generic_string();
+    } else sourceTarget = rawTarget(sprite, source);
+    require(bool(sourceTarget.cel), "CEL_NOT_FOUND", "A stamp source cel must exist; a missing cel is not permission to erase destinations.");
+    require(!(sourceTarget.cel->bounds() & sourceArea).isEmpty(), "OUTSIDE_CEL", "Source rectangle must intersect stored cel data.");
+    require(sourceSprite->pixelFormat() == sprite->pixelFormat(), "UNSUPPORTED_COLOR_MODE", "Source and destination must have the same native color mode; no implicit conversion.");
+    if (sprite->pixelFormat() == IMAGE_INDEXED) {
+      auto sourcePalette = sourceSprite->palette(sourceTarget.frame);
+      for (const auto& patch : patches) {
+        auto targetPalette = sprite->palette(patch.frame);
+        bool same = sourceSprite->transparentColor() == sprite->transparentColor() && sourcePalette->size() == targetPalette->size();
+        for (int i = 0; same && i < sourcePalette->size(); ++i) same = sourcePalette->getEntry(i) == targetPalette->getEntry(i);
+        require(same, "PALETTE_MISMATCH", "Indexed source/destination palettes and transparent indices must match exactly; no remapping.");
+      }
+    }
+    size_t sourceBytes = size_t(calculate_rowstride_bytes(sprite->pixelFormat(), sourceArea.w)) * sourceArea.h;
+    correctionLimits(sprite, patches, sourceBytes + (loaded ? spriteBytes(sourceSprite) : 0));
+    // ONE original-source snapshot, before preparing/committing ANY destination.
+    ImageRef snapshot(Image::create(sprite->pixelFormat(), sourceArea.w, sourceArea.h));
+    for (int y = 0; y < sourceArea.h; ++y) for (int x = 0; x < sourceArea.w; ++x)
+      snapshot->putPixel(x, y, rawSample(sourceSprite, sourceTarget, x + sourceArea.x, y + sourceArea.y));
+    // Hash decoded native samples + interpretation, not PNG compression bytes.
+    Json signature = {{"format", int(sprite->pixelFormat())}, {"width", sourceArea.w}, {"height", sourceArea.h}, {"transparentIndex", sourceSprite->transparentColor()}};
+    if (sprite->pixelFormat() == IMAGE_INDEXED) {
+      signature["palette"] = Json::array(); auto palette = sourceSprite->palette(sourceTarget.frame);
+      for (int i = 0; i < palette->size(); ++i) signature["palette"].push_back(palette->getEntry(i));
+    }
+    SHA1Context hash; SHA1Reset(&hash); auto header = signature.dump();
+    SHA1Input(&hash, reinterpret_cast<const uint8_t*>(header.data()), header.size());
+    for (int y = 0; y < sourceArea.h; ++y) SHA1Input(&hash, static_cast<const uint8_t*>(snapshot->getPixelAddress(0, y)), snapshot->getRowStrideSize());
+    uint8_t digest[20]; SHA1Result(&hash, digest); std::ostringstream hex;
+    for (auto byte : digest) hex << std::hex << std::setw(2) << std::setfill('0') << int(byte);
+    auto sourceHash = hex.str();
+    if (params.contains("expectedSourceHash")) {
+      auto expected = text(params, "expectedSourceHash", 40);
+      require(expected.size() == 40 && expected.find_first_not_of("0123456789abcdef") == std::string::npos, "INVALID_PARAMS", "expectedSourceHash must be the returned lowercase 40-character digest.");
+      require(expected == sourceHash, "SOURCE_CHANGED", "Decoded source region/palette changed since the preview. Dry-run again before applying.");
+    }
+    for (auto& patch : patches) {
+      auto target = RawTarget{patch.layer, patch.frame, patch.layer->cel(patch.frame)};
+      patch.image.reset(Image::create(sprite->pixelFormat(), patch.area.w, patch.area.h));
+      patch.image->setMaskColor(sprite->transparentColor());
+      for (int y = 0; y < patch.area.h; ++y) for (int x = 0; x < patch.area.w; ++x) {
+        auto old = rawSample(sprite, target, x + patch.area.x, y + patch.area.y), value = snapshot->getPixel(x, y);
+        bool selected = bits.empty() || bits[size_t(y) * patch.area.w + x] == '1';
+        bool opaque = sprite->pixelFormat() == IMAGE_RGB ? rgba_geta(value) != 0 : sprite->pixelFormat() == IMAGE_GRAYSCALE ? graya_geta(value) != 0 : value != sprite->transparentColor();
+        if (!selected || (mode == "nontransparent" && !opaque)) value = old;
+        else if (mode == "blend") value = sprite->pixelFormat() == IMAGE_RGB ? rgba_blender_normal(old, value, 255) : graya_blender_normal(old, value, 255);
+        patch.image->putPixel(x, y, value);
+      }
+      correctionRegion(sprite, patch);
+    }
+    auto result = commitCorrections(document, params, patches, "AI atomic region stamp");
+    result["source"] = sourceInfo; result["sourceHash"] = sourceHash; result["mode"] = mode;
+    return result;
   }
   void setPixels(Document* document, const Json& params) {
     auto sprite = document->sprite();
@@ -2469,7 +2568,7 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask", "stamp_region"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
     if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.12.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
@@ -2553,6 +2652,8 @@ private:
       extra = editPixels(document, params);
     } else if (method == "translate_regions") {
       extra = translateRegions(document, params);
+    } else if (method == "stamp_region") {
+      extra = stampRegion(document, params);
     } else if (method == "resize_canvas" || method == "crop_canvas") {
       extra = canvas(document, params, method == "crop_canvas");
     } else if (method == "duplicate_layer") {

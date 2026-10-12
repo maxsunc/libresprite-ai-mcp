@@ -70,3 +70,68 @@ Nonempty masks can be passed directly to `translate_regions` or explicitly used
 to set a GUI selection in a SEPARATE mutation. Empty masks have all-zero bits:
 editing tools requiring nonempty masks will refuse them, not edit the whole cel.
 No smoothing, filling holes, landmarks or implicit fallback is performed.
+
+## Atomic region/PNG stamping
+
+`libresprite_stamp_region` requires the active document/current revision, resumed
+bridge and idle GUI/views. Supply explicit `source`, **required** `mode`, and
+1…256 unique `edits: [{layerId,frame,x,y}]`. One changed batch is one native Undo
+step, with all patches prepared before mutation. `dryRun: true` reports exact
+counts/bounds/`wouldEditCels`, edits zero cels, and preserves revision/save/redo state.
+Labels, change summaries and target guards match [animation correction](animation-correction.md).
+
+Source shapes:
+
+```json
+{ "layerId": 2, "frame": 0, "x": -1, "y": 2, "width": 3, "height": 2 }
+```
+
+```json
+{ "path": "parts/hand.png", "x": 0, "y": 0, "width": 8, "height": 8 }
+```
+
+Live sources are in the SAME sprite; signed origins can read off-canvas data and
+include transparent padding outside the cropped cel. The source cel must exist
+and intersect the source rectangle: missing sources are NOT an erase fallback.
+Hidden/locked/linked/background sources are readable without changing their flags.
+PNG paths must resolve inside the asset root; the full source rectangle must fit
+the decoded PNG. Loading is detached (no tab/history/focus changes), using the
+existing trusted native codecs and 32 MiB file/working bounds—not a hostile-file
+sandbox. PNGs must decode to one layer/frame. External/cross-document/native-file
+sources, arbitrary scripts, automatic conversion and resampling are not supported.
+
+- `mode: replace`: copy every selected raw sample, including transparency and
+  invisible alpha-zero payloads; destination colors may be erased.
+- `mode: nontransparent`: skip source RGBA/grayscale alpha zero, or the source's
+  indexed transparent index. Cel/layer opacity, visibility and background display
+  semantics are not baked into samples.
+- `mode: blend`: upstream normal per-pixel RGBA/grayscale alpha blending at full
+  opacity. Indexed blending is refused; indices are never remapped.
+- Optional `maskBits`: full source-sized binary bitmap with at least one selected
+  bit; zero-bit holes preserve destination pixels in every mode. It can be taken
+  from `extract_mask` when its rectangle matches the stamp source.
+
+Source and destination native color modes must match. Indexed effective palettes
+(all entries and size) and transparent indices must match EVERY target frame
+exactly, even if only some entries are used; incompatible later targets cannot
+partially apply earlier ones. Destinations require transparent editable image
+layers/ancestors, unlinked/unshared cels, and whole footprints within the canvas.
+No clipping or implicit unlink/unlock occurs. Missing destination cels are created
+only for changed nontransparent data; unchanged batches preserve the redo branch.
+Existing unrelated/off-canvas pixels, timing/tags/palettes/opacity/user data, GUI
+selection and frame/layer focus remain unchanged. Native trimming can remove
+transparent padding or wholly empty cels.
+
+The source is snapshotted ONCE before ANY destination changes. Same-cel overlap and
+an earlier destination that is also the source cannot affect later copies.
+Results include the source specification, `mode` and lowercase 40-character
+`sourceHash` (SHA-1 of decoded native region + dimensions/mode/palette interpretation).
+Optional `expectedSourceHash` refuses `SOURCE_CHANGED` if a PNG/source changed since
+dry run. It guards content consistency, not file authenticity; compression-only
+changes need not change the digest. Reinspect revision too; never retry uncertain edits.
+
+Source rectangles have at most 262,144 samples; all destination samples total at
+most 1,048,576. Source snapshot, loaded PNG images and patches collectively fit
+32 MiB scratch; worst-case destination sprite growth separately fits 32 MiB,
+checked before patch allocation/native commands. PNG decoder allocations precede
+these bridge checks. The document-wide selection is never used as a fallback.

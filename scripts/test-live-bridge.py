@@ -20,7 +20,7 @@ from bridge_animation_cases import test_animation_workflows
 from bridge_editing_cases import test_editing_workflows
 from bridge_inspection_cases import test_frame_differences, test_isolated_previews, test_animation_diagnostics
 from bridge_correction_cases import test_animation_correction
-from bridge_pixel_region_cases import test_pixel_reads, test_pixel_masks
+from bridge_pixel_region_cases import test_pixel_reads, test_pixel_masks, test_region_stamps
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -67,6 +67,7 @@ def main():
     parser.add_argument("--correction-only", action="store_true", help="Run atomic pixel/bitmap-region correction checks in a fresh GUI.")
     parser.add_argument("--pixels-only", action="store_true", help="Run exact pixel-region checks in a fresh GUI.")
     parser.add_argument("--masks-only", action="store_true", help="Run read-only extracted-mask checks in a fresh GUI.")
+    parser.add_argument("--stamps-only", action="store_true", help="Run atomic region/PNG stamping checks in a fresh GUI.")
     options = parser.parse_args()
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
@@ -103,9 +104,13 @@ def main():
                 if options.pixels_only:
                     test_pixel_reads(client, assets, SMOKE)
                     test_pixel_masks(client, assets, SMOKE)
+                    test_region_stamps(client, assets, SMOKE)
                     return
                 if options.masks_only:
                     test_pixel_masks(client, assets, SMOKE)
+                    return
+                if options.stamps_only:
+                    test_region_stamps(client, assets, SMOKE)
                     return
                 if options.correction_only:
                     test_animation_correction(client, assets, SMOKE)
@@ -129,6 +134,7 @@ def main():
                     return
                 test_pixel_reads(client, assets, SMOKE)
                 test_pixel_masks(client, assets, SMOKE)
+                test_region_stamps(client, assets, SMOKE)
                 test_animation_correction(client, assets, SMOKE)
                 test_frame_differences(client, assets, SMOKE)
                 test_isolated_previews(client, assets, SMOKE)

@@ -16,6 +16,15 @@ JSON/optional region PNG without creating a document mask or changing flags,
 preferences or history. Indexed occupancy follows raw index/background semantics,
 not palette/renderer alpha. Empty seeds have no whole-region fallback.
 
+## 2026-10-11 — v0.12.0 atomic region stamping
+
+The bridge snapshots one explicit native cel/PNG region, validates unique
+destinations, color modes, indexed palette equivalence and aggregate budgets,
+and prepares all patches before reusing the correction transaction. Same-cel
+overlap reads only original data. Blend uses upstream RGBA/grayscale normal
+blenders. Source digest guards decoded samples/palette, not file authenticity.
+PNG sources use the existing detached native loader and never open a tab.
+
 This is a modified development editor, not the unmodified upstream release.
 The imported baseline is LibreSprite v1.2 at
 `5cb089be32f56b4ae559ae51f0c5666049f41bca`; the dependency revisions are in

@@ -1,8 +1,9 @@
 """Exact pixel regions in NEW, disposable native GUI editors. GPL-2.0-only."""
 import base64
+import copy
 import struct
 import zlib
-from bridge_animation_cases import canonical_inspection, fixture, raw_frames
+from bridge_animation_cases import canonical_inspection, fixture, raw_frames, large_fixture
 
 
 class RegionCase:
@@ -184,3 +185,181 @@ def test_pixel_masks(client, assets, smoke):
         client.request("set_paused", {"paused": False})
     case.close()
     print("PASS: raw alpha/value bitmap masks and exact PNGs/counts/bounds, seeded 4/8 components/empty seeds, missing/hidden/locked/linked/background/indexed/grayscale cels, JSON-only previews, paused/inactive reads and selection/save/redo/focus/resource preservation.")
+
+
+def normal_blend(backdrop, source, mode):
+    """Independent native straight-alpha integer reference; C++ division truncates."""
+    channels = 4 if mode == 32 else 2
+    b = list(backdrop.to_bytes(channels, "little")); s = list(source.to_bytes(channels, "little"))
+    if not b[-1]:
+        return source
+    if not s[-1]:
+        return backdrop
+    product = b[-1] * s[-1] + 128
+    alpha = b[-1] + s[-1] - (((product >> 8) + product) >> 8)
+    values = [b[i] + int((s[i] - b[i]) * s[-1] / alpha) for i in range(channels - 1)] + [alpha]
+    return int.from_bytes(bytes(values), "little")
+
+
+def test_region_stamps(client, assets, smoke):
+    case = RegionCase(client, assets, smoke)
+
+    def stamp(params, error=None):
+        before = case.current()
+        result = client.request("stamp_region", {"documentId": case.document_id, "expectedRevision": before["revision"], **params}, expected_error=error)
+        if error:
+            assert case.current() == before, (error, params)
+        return result
+
+    def invariants(before):
+        after = case.current()
+        for key in ("frames", "palettes", "tags", "selection", "activeFrame", "activeLayerId"):
+            assert after[key] == before[key], key
+
+    for mode in (32, 8, 16):
+        name = f"stamp-live-{mode}.ase"; fixture(assets / name, mode=mode)
+        if mode == 32:
+            replace_payload(assets / name, bytes((11, 22, 33, 0)))
+        case.use(client.request("open", {"path": name}))
+        destination = case.edit("create_layer", name="Stamp destinations")["createdLayerId"]
+        case.edit("set_bitmap_selection", x=10, y=10, width=2, height=2, bits="1001")
+        case.edit("set_active_site", layerId=destination, frame=2)
+        case.edit("create_tag", name="Keep timing", **{"from": 0, "to": 2})
+        case.edit("save", path=f"stamp-live-{mode}-before.ase")
+        original_native = raw_frames(assets / f"stamp-live-{mode}-before.ase")
+        case.edit("create_layer", name="Redo branch"); case.edit("undo")
+        original = {(layer, frame): case.read(layerId=layer, frame=frame)["rows"] for layer in (case.layer, destination) for frame in range(3)}
+        source = {"layerId": case.layer, "frame": 0, "x": -1, "y": 2, "width": 3, "height": 2}
+        samples = case.read(x=-1, y=2, width=3, height=2)["rows"]
+        offcanvas = case.read(x=-1, y=2, width=1, height=2)["rows"]
+        edits = [{"layerId": case.layer, "frame": 0, "x": 0, "y": 2}] + [{"layerId": destination, "frame": frame, "x": 3 + frame, "y": 6} for frame in range(3)]
+        for operation in ("replace", "nontransparent", "blend") if mode != 8 else ("replace", "nontransparent"):
+            before = case.current(); assert before["canRedo"]
+            params = {"source": source, "edits": edits, "mode": operation}
+            if operation == "nontransparent":
+                params["maskBits"] = "101011"
+            expected = copy.deepcopy(original)
+            for entry in edits:
+                rows = expected[(entry["layerId"], entry["frame"])]
+                for y, row in enumerate(samples):
+                    for x, value in enumerate(row):
+                        if "maskBits" in params and params["maskBits"][y * 3 + x] != "1":
+                            continue
+                        if operation == "nontransparent" and not (value != 0 if mode == 8 else value >> (24 if mode == 32 else 8)):
+                            continue
+                        old = rows[y + entry["y"]][x + entry["x"]]
+                        rows[y + entry["y"]][x + entry["x"]] = normal_blend(old, value, mode) if operation == "blend" else value
+            changes = []
+            for entry in edits:
+                key = (entry["layerId"], entry["frame"])
+                points = [(x, y) for y in range(16) for x in range(16) if original[key][y][x] != expected[key][y][x]]
+                if points:
+                    x1, y1 = min(x for x, _ in points), min(y for _, y in points)
+                    changes.append({"layerId": key[0], "frame": key[1], "changedPixels": len(points), "bounds": {"x": x1, "y": y1, "width": max(x for x, _ in points) - x1 + 1, "height": max(y for _, y in points) - y1 + 1}})
+            preview = stamp({**params, "dryRun": True})
+            assert preview["editedCels"] == 0 and preview["changes"] == changes and case.current() == before
+            applied = stamp({**params, "expectedSourceHash": preview["sourceHash"]})
+            assert applied["changes"] == changes and applied["editedCels"] == len(changes)
+            invariants(before)
+            for key, rows in expected.items():
+                assert case.read(layerId=key[0], frame=key[1])["rows"] == rows, (mode, operation, key)
+            assert case.read(x=-1, y=2, width=1, height=2)["rows"] == offcanvas
+            cel = case.current()["layers"][0]["cels"][0]
+            assert cel["opacity"] == 192 and cel["userData"]["text"] == "preserve me"
+            for _ in range(2):
+                case.edit("undo")
+                for key, rows in original.items():
+                    assert case.read(layerId=key[0], frame=key[1])["rows"] == rows
+                case.edit("redo")
+                for key, rows in expected.items():
+                    assert case.read(layerId=key[0], frame=key[1])["rows"] == rows
+            case.edit("undo")
+        case.edit("save", path=f"stamp-live-{mode}-undo.ase")
+        assert raw_frames(assets / f"stamp-live-{mode}-undo.ase") == original_native
+        before = case.current()
+        valid = {"source": source, "mode": "replace", "edits": edits[1:2]}
+        for params, code in (({**valid, "edits": edits[1:2] * 2}, "INVALID_PARAMS"), ({**valid, "edits": edits[1:2] + [{"layerId": destination, "frame": 1, "x": 15, "y": 0}]}, "OUTSIDE_CANVAS"), ({**valid, "source": {**source, "layerId": destination}}, "CEL_NOT_FOUND"), ({**valid, "maskBits": "000000"}, "INVALID_PARAMS"), ({**valid, "maskBits": "1"}, "INVALID_PARAMS"), ({**valid, "expectedSourceHash": "0" * 40}, "SOURCE_CHANGED"), ({**valid, "expectedRevision": before["revision"] + 1}, "STALE_REVISION"), ({**valid, "sessionId": "wrong"}, "SESSION_MISMATCH")):
+            stamp(params, code)
+        if mode == 8:
+            stamp({**valid, "mode": "blend"}, "UNSUPPORTED_COLOR_MODE")
+        case.edit("update_layer", layerId=case.layer, editable=False, visible=False)
+        stamp(valid)  # Locked/hidden source is readable; destination stays editable.
+        case.edit("undo"); case.edit("undo")
+        case.edit("update_layer", layerId=destination, editable=False)
+        stamp(valid, "LAYER_LOCKED"); case.edit("undo")
+        client.request("set_paused", {"paused": True})
+        stamp(valid, "PAUSED"); stamp({**valid, "dryRun": True}, "PAUSED")
+        client.request("set_paused", {"paused": False})
+        other = client.request("create", {"width": 1, "height": 1, "name": "Inactive stamp"})
+        stamp(valid, "INACTIVE_DOCUMENT")
+    print("PASS: atomic raw RGBA/indexed/grayscale stamps, original-source self-overlap/order, exact replace/nontransparent/masked/native-blend pixels/counts/bounds, single-step repeated Undo/Redo, metadata/off-canvas/mask/focus/redo preservation and mutation guards.")
+
+    # A detached PNG stamp must not open a tab, change source bytes or mutate focus.
+    part = assets / "stamp-part.png"
+    png_values = [(200, 40, 80, 255), (20, 180, 80, 128), (0, 0, 0, 0), (40, 60, 220, 255)]
+
+    def png_write(values):
+        rows = b"".join(b"\0" + bytes(channel for pixel in values[y * 2:y * 2 + 2] for channel in pixel) for y in range(2))
+        part.write_bytes(smoke.SIGNATURE + smoke.chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0)) + smoke.chunk(b"IDAT", zlib.compress(rows)) + smoke.chunk(b"IEND", b""))
+
+    png_write(png_values)
+    case.use(client.request("create", {"width": 8, "height": 8, "name": "PNG stamps"}))
+    case.edit("add_frame", index=1)
+    before = case.current(); documents = client.request("list_documents"); original_bytes = part.read_bytes()
+    valid = {"source": {"path": part.name, "x": 0, "y": 0, "width": 2, "height": 2}, "mode": "replace", "edits": [{"layerId": case.layer, "frame": i, "x": 2 + i, "y": 3} for i in (0, 1)]}
+    preview = stamp({**valid, "dryRun": True}); assert case.current() == before
+    applied = stamp({**valid, "expectedSourceHash": preview["sourceHash"]})
+    assert applied["editedCels"] == 2 and applied["changedPixels"] == 6
+    invariants(before)
+    for i in (0, 1):
+        result = client.request("render", {"documentId": case.document_id, "frame": i, "scale": 1})
+        width, height, pixels = case.decode(result); assert (width, height) == (8, 8)
+        expected = bytearray(8 * 8 * 4)
+        for n, value in enumerate(png_values):
+            offset = ((3 + n // 2) * 8 + 2 + i + n % 2) * 4
+            expected[offset:offset + 4] = bytes(value)
+        assert pixels == bytes(expected)
+    ids = lambda state: [d["documentId"] for d in state["documents"]]
+    assert ids(client.request("list_documents")) == ids(documents) and part.read_bytes() == original_bytes
+    before = case.current(); assert stamp(valid)["changedPixels"] == 0 and case.current() == before
+    case.edit("undo"); before = case.current(); assert before["canRedo"]
+    assert stamp({**valid, "dryRun": True})["sourceHash"] == preview["sourceHash"] and case.current() == before
+    png_write([(50, 60, 70, 255), *png_values[1:]])
+    stamp({**valid, "expectedSourceHash": preview["sourceHash"]}, "SOURCE_CHANGED")
+    outside = assets.parent / "outside-part.png"; outside.write_bytes(part.read_bytes())
+    stamp({**valid, "source": {**valid["source"], "path": "../outside-part.png"}}, "PATH_OUTSIDE_ROOT")
+    (assets / "outside-part.png").symlink_to(outside)
+    stamp({**valid, "source": {**valid["source"], "path": "outside-part.png"}}, "PATH_OUTSIDE_ROOT")
+    stamp({**valid, "source": {**valid["source"], "path": "stamp-live-32.ase"}}, "UNSUPPORTED_FORMAT")
+    stamp({**valid, "source": {**valid["source"], "x": 1, "width": 2}}, "OUTSIDE_CANVAS")
+    print("PASS: detached PNG stamps/independent exact PNGs, no tabs/file/focus changes, dry-run source digests, unchanged redo branch and SOURCE_CHANGED/path/format/footprint refusals.")
+
+    name = "stamp-palette.ase"; fixture(assets / name, mode=8, palettes=True)
+    case.use(client.request("open", {"path": name}))
+    destination = case.edit("create_layer", name="Palette guard")["createdLayerId"]
+    source = {"layerId": case.layer, "frame": 0, "x": 0, "y": 2, "width": 2, "height": 2}
+    valid = {"source": source, "mode": "replace", "edits": [{"layerId": destination, "frame": i, "x": 4, "y": 4} for i in (0, 1)]}
+    stamp(valid, "PALETTE_MISMATCH")
+    stamp({**valid, "source": {"path": part.name, "x": 0, "y": 0, "width": 2, "height": 2}}, "UNSUPPORTED_COLOR_MODE")
+    name = "stamp-transparent7.ase"; fixture(assets / name, mode=8)
+    data = bytearray((assets / name).read_bytes()); data[28] = 7; (assets / name).write_bytes(data)
+    case.use(client.request("open", {"path": name}))
+    destination = case.edit("create_layer", name="Nonzero transparent stamp")["createdLayerId"]
+    stamp({"source": {"layerId": case.layer, "frame": 0, "x": -2, "y": 2, "width": 4, "height": 1}, "mode": "nontransparent", "edits": [{"layerId": destination, "frame": 1, "x": 4, "y": 5}]})
+    assert case.read(layerId=destination, frame=1, x=4, y=5, width=4, height=1)["rows"] == [[7, 1, 2, 0]]
+    for linked, background in ((True, False), (False, True)):
+        name = f"stamp-guard-{linked}.ase"; fixture(assets / name, linked=linked, background=background)
+        case.use(client.request("open", {"path": name}))
+        valid = {"source": {"layerId": case.layer, "frame": 0, "x": 0, "y": 2, "width": 2, "height": 2}, "mode": "replace", "edits": [{"layerId": case.layer, "frame": 1, "x": 4, "y": 4}]}
+        stamp(valid, "LINKED_CEL" if linked else "UNSUPPORTED_LAYER")
+        destination = case.edit("create_layer", name="Readable source")["createdLayerId"]
+        stamp({**valid, "source": {**valid["source"], "frame": 1}, "edits": [{"layerId": destination, "frame": 2, "x": 4, "y": 4}]})
+    name = "stamp-growth.ase"; large_fixture(assets / name)
+    case.use(client.request("open", {"path": name}))
+    case.edit("edit_cels", edits=[{"layerId": case.layer, "frame": i, "x": 4000} for i in range(8)])
+    valid = {"source": {"layerId": case.layer, "frame": 7, "x": 4000, "y": 0, "width": 2, "height": 2}, "mode": "replace", "edits": [{"layerId": case.layer, "frame": 0, "x": 0, "y": 0}]}
+    stamp(valid, "LIMIT_EXCEEDED")
+    stamp({**valid, "source": {**valid["source"], "width": 1024, "height": 257}}, "LIMIT_EXCEEDED")
+    stamp({**valid, "source": {**valid["source"], "width": 1024, "height": 256}, "edits": valid["edits"] * 5}, "LIMIT_EXCEEDED")
+    case.close()
+    print("PASS: incompatible later indexed palettes/modes, linked/background destination guards, readable linked/background sources and aggregate source/work/off-canvas growth bounds before mutation.")

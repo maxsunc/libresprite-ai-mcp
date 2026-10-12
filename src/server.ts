@@ -47,6 +47,10 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     z.object({ x: coordinate, y: coordinate, index: channel }).strict(),
   ]);
   const correctionOptions = { ...target, dryRun: z.boolean().default(false), label: z.string().min(1).max(120).optional() };
+  const stampSource = z.union([
+    z.object({ layerId: documentId, frame, x: signedCoordinate, y: signedCoordinate, width: dimension, height: dimension }).strict(),
+    z.object({ path: relativePath, x: coordinate, y: coordinate, width: dimension, height: dimension }).strict(),
+  ]);
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -155,6 +159,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { documentId, layerId: documentId, frame, x: coordinate, y: coordinate, width: dimension, height: dimension, criterion: z.enum(["nontransparent", "value"]).default("nontransparent"), value: z.number().int().min(0).max(4_294_967_295).optional(), minAlpha: z.number().int().min(1).max(255).optional(), seed: point.strict().optional(), connectivity: z.union([z.literal(4), z.literal(8)]).optional(), preview: z.boolean().default(true) },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, (params) => call("extract_mask", params));
+  server.registerTool("libresprite_stamp_region", {
+    description: "Atomic region/PNG stamping across 1-256 explicit unique layer/frame destinations in the ACTIVE sprite; ONE native Undo step. source is same-sprite layerId/frame/x/y/width/height OR root-relative PNG path/x/y/width/height. Raw source values/transparent padding are snapshotted BEFORE all destination edits, so self-overlap/order is safe. Source cel must exist/intersect its rectangle; missing source is NOT erase permission. Hidden/locked/linked/background sources may be read but not implicitly modified. REQUIRED mode:replace (copies transparency too), nontransparent (skips source alpha0/transparentIndex), blend (native per-pixel RGBA/grayscale normal alpha blend; indexed refused). Optional maskBits is an exact source-sized nonempty binary bitmap; holes preserve destinations. Same native color modes only; indexed palettes/transparentIndex must match every target exactly. No resampling/remapping/implicit unlink; editable transparent unlinked/unshared destinations, whole footprints in canvas, no clipping. Source max262144 pixels, aggregate work1,048,576; source+patch scratch and worst-case sprite growth bounded32MiB. dryRun reports exact changes/sourceHash without mutation; expectedSourceHash optionally guards decoded source/palette between dry run/apply (SOURCE_CHANGED). Native trimming may remove transparent padding/empty cels. Preserves GUI mask/focus, timing/tags/palettes/opacity/user data; active/revision/session/resumed/idle guards apply; never blindly retry. PNG decoding uses trusted-root native codecs, not a hostile-file sandbox.",
+    inputSchema: { ...correctionOptions, source: stampSource, mode: z.enum(["replace", "nontransparent", "blend"]), maskBits: bits.optional(), expectedSourceHash: z.string().regex(/^[a-f0-9]{40}$/).optional(), edits: z.array(z.object({ layerId: documentId, frame, x: coordinate, y: coordinate }).strict()).min(1).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("stamp_region", params));
   server.registerTool("libresprite_render", {
     description: "Return an actual composited PNG image plus metadata for a zero-based frame. Nearest-neighbor scale preserves pixel edges. At most 1,048,576 output pixels. Includes revision; no file is written.",
     inputSchema: { documentId, frame, scale: z.number().int().min(1).max(16).default(1) }, annotations: { readOnlyHint: true, openWorldHint: false },

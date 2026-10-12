@@ -114,7 +114,7 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **66 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **67 tools**, and limitations.
 
 Read-only frame differences highlight added/removed/modified rendered pixels
 and report exact counts, bounds, and occupancy centroids. Isolated layer/group
@@ -140,7 +140,11 @@ Exact native cel pixel reads expose RGBA, grayscale-alpha and indexed values
 in bounded rectangles, including off-canvas data, without rendering or changing
 the document. Read-only mask extraction finds raw alpha/value matches and explicit
 seeded connected components without changing the GUI selection. See
-[pixel regions](docs/pixel-regions.md).
+[pixel regions](docs/pixel-regions.md). Atomic region/PNG stamping reuses native
+sprite parts across explicit frames/layers with replace, nontransparent-copy or
+alpha-blend modes, source snapshots and one Undo step.
+Use `node scripts/demo-pixel-regions.mjs` for a separate generated review editor
+and [the v0.12 checklist](docs/testing-v0.12.md) for native/MCP testing.
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.

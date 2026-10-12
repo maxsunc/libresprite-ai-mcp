@@ -9,7 +9,11 @@
 - Read-only full-rectangle raw alpha/value masks, optional seeded 4/8-connected
   components and white-on-transparent previews. Empty seeds never fall back to
   whole-region selection; the GUI mask is never read or changed.
-- 66 MCP tools; existing artwork, editors and approved packages are unchanged.
+- Atomic native-region/root-relative PNG stamping with explicit replace,
+  nontransparent-copy or normal blend modes; original-source snapshots make overlap
+  and multi-target order safe. Optional bitmap scoping, source digest guard and
+  dry runs; no mode/palette conversion, clipping or implicit unlinking.
+- 67 MCP tools; existing artwork, editors and approved packages are unchanged.
 
 ## 0.11.0 — Atomic animation correction (2026-10-09)
 
