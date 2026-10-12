@@ -7,6 +7,7 @@
 // Updated 2026-10-09: isolated layer/group previews without live visibility changes.
 // Updated 2026-10-09: bounded playback-order loop and millisecond timing diagnostics.
 // Updated 2026-10-09: atomic explicit multi-frame pixel and masked-region correction.
+// Updated 2026-10-11: bounded exact native cel pixel reads, including off-canvas samples.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -14,6 +15,7 @@
 #include "app/automation/apng.h"
 #include "app/automation/animation_analysis.h"
 #include "app/automation/animation_correction.h"
+#include "app/automation/pixel_regions.h"
 #include "app/automation/reorder_frames.h"
 #include "app/automation/reparent_layer.h"
 #include "app/automation/revision_metadata.h"
@@ -663,6 +665,55 @@ private:
     auto result = summary(document);
     result["revision"] = revision(document, details(document));
     result["sessionId"] = m_session;
+    return result;
+  }
+  struct RawTarget { Layer* layer; int frame; std::shared_ptr<Cel> cel; };
+  RawTarget rawTarget(Sprite* sprite, const Json& params) {
+    auto layer = findLayer(sprite, integer(params, "layerId", 1, INT32_MAX));
+    require(layer->isImage(), "UNSUPPORTED_LAYER", "Raw pixel operations require an explicit image layer, not a group/composite.");
+    int frame = integer(params, "frame", 0, sprite->lastFrame());
+    return {layer, frame, layer->cel(frame)};
+  }
+  gfx::Rect pixelRect(const Json& params, size_t limit, bool signedOrigin) {
+    gfx::Rect area(integer(params, "x", signedOrigin ? -32768 : 0, signedOrigin ? 32767 : 1023),
+                   integer(params, "y", signedOrigin ? -32768 : 0, signedOrigin ? 32767 : 1023),
+                   integer(params, "width", 1, 1024), integer(params, "height", 1, 1024));
+    require(size_t(area.w) * area.h <= limit, "LIMIT_EXCEEDED", "Requested pixel region exceeds its sample budget.");
+    return area;
+  }
+  color_t rawSample(Sprite* sprite, const RawTarget& target, int x, int y) {
+    return target.cel && target.cel->bounds().contains(x, y) ? target.cel->image()->getPixel(x - target.cel->x(), y - target.cel->y()) :
+           sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0);
+  }
+  void rawMetadata(Json& result, Sprite* sprite, const RawTarget& target) {
+    result["layerId"] = target.layer->id(); result["frame"] = target.frame;
+    result["background"] = target.layer->isBackground();
+    result["layerOpacity"] = static_cast<LayerImage*>(target.layer)->opacity();
+    result["layerBlendMode"] = int(static_cast<LayerImage*>(target.layer)->blendMode());
+    result["cel"] = nullptr;
+    if (auto cel = target.cel) result["cel"] = {{"celId", cel->id()}, {"celDataId", cel->data()->id()},
+      {"imageId", cel->image()->id()}, {"x", cel->x()}, {"y", cel->y()},
+      {"width", cel->image()->width()}, {"height", cel->image()->height()}, {"opacity", cel->opacity()}, {"links", cel->links()}};
+    result["packing"] = sprite->pixelFormat() == IMAGE_RGB ? "0xAABBGGRR" : sprite->pixelFormat() == IMAGE_GRAYSCALE ? "0xAAVV" : "index";
+    if (sprite->pixelFormat() == IMAGE_INDEXED) {
+      auto palette = sprite->palette(target.frame);
+      result["paletteRgbaPacked"] = Json::array();
+      for (int i = 0; i < palette->size(); ++i) result["paletteRgbaPacked"].push_back(palette->getEntry(i));
+    }
+  }
+  Json readPixels(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    auto target = rawTarget(sprite, params);
+    auto area = pixelRect(params, 16384, true);
+    auto encoding = params.contains("encoding") ? text(params, "encoding", 16) : "runs";
+    require(encoding == "values" || encoding == "runs", "INVALID_PARAMS", "encoding must be values or runs.");
+    auto result = previewMetadata(document);
+    result["schema"] = "libresprite-pixel-read-v1";
+    rawMetadata(result, sprite, target);
+    result["region"] = {{"x", area.x}, {"y", area.y}, {"width", area.w}, {"height", area.h}};
+    result["encoding"] = encoding; result["sampleCount"] = area.w * area.h;
+    result["rows"] = automation::pixelRows(area.w, area.h, encoding,
+      [&](int x, int y) { return rawSample(sprite, target, x + area.x, y + area.y); });
     return result;
   }
   Json previewAsset(const Json& params) {
@@ -2356,9 +2407,9 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.11.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.12.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -2381,7 +2432,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation" || method == "read_pixels";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -2408,6 +2459,7 @@ private:
     if (read) {
       DocumentReader reader(document, 0);
       if (method == "inspect") return inspect(document);
+      if (method == "read_pixels") return readPixels(document, params);
       if (method == "contact_sheet") return contactSheet(document, params);
       if (method == "render_onion_skin") return renderOnionSkin(document, params);
       if (method == "render_selection") return renderSelection(document, params);

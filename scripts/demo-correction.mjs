@@ -53,7 +53,7 @@ function unchangedMetadata(before, after) {
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 64);
+  assert.ok((await client.listTools()).tools.some((tool) => tool.name === "libresprite_translate_regions"));
   const launched = await request("launch");
   const deadline = Date.now() + 20_000;
   let status;
@@ -64,7 +64,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  assert.equal(status.bridgeVersion, "0.11.0");
+  assert.ok(status.methods.includes("translate_regions"));
   await request("set_paused", { paused: false });
   const document = await request("create", { width: 32, height: 24, name: "Animation correction — generated arrow" });
   documentId = document.documentId;

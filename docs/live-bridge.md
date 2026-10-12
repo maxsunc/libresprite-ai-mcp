@@ -112,6 +112,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_set_active_site` | Focus a layer/frame without editing document data |
 | `libresprite_close_document` | Confirmed saved/unmodified active-document close |
 | `libresprite_copy_cel` | Independent whole-cel copy within one sprite |
+| `libresprite_read_pixels` | Exact bounded raw RGBA/grayscale/indexed cel rows/runs |
 | `libresprite_duplicate_frames` | Ordered copies of explicit pre-edit frame indices |
 | `libresprite_reorder_frames` | Full permutation with pose timing/link/tag guards |
 | `libresprite_edit_cels` | Atomic explicit multi-frame/layer cel property/transforms |
@@ -168,7 +169,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **64 tools** in server/bridge version **0.11.0**. Rebuild the editor
+There are **65 tools** in server/bridge version **0.12.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not

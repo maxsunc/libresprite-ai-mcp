@@ -1,5 +1,13 @@
 # Development milestones
 
+## 0.12.0 — Exact pixel regions (2026-10-11)
+
+- Read-only exact native RGBA/indexed/grayscale-alpha cel values, bounded signed
+  rectangles and complete row/value or row-run encodings. Raw invisible payloads,
+  off-canvas samples, effective indexed palettes and cel/layer metadata are retained.
+- Paused/inactive/hidden/locked/linked/background reads preserve native state.
+- 65 MCP tools; existing artwork, editors and approved packages are unchanged.
+
 ## 0.11.0 — Atomic animation correction (2026-10-09)
 
 - Explicit multi-frame/layer pixel replacement/erasure for RGBA or exact indexed

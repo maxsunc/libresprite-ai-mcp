@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 64);
+    assert.equal(tools.length, 65);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -76,6 +76,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
     const valid = [
       ["create", { width: 16, height: 16, colorMode: "indexed" }],
+      ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 2, width: 4, height: 2 }],
       ["resize_canvas", { ...target, width: 8, height: 12 }],
       ["crop_canvas", { ...target, x: 1, y: 2, width: 8, height: 8 }],
       ["duplicate_layer", { ...target, layerId: 1, parentId: null }],
@@ -136,9 +137,10 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation", "read_pixels"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
+    assert.equal(requests.find((item) => item.method === "read_pixels")?.params.encoding, "runs");
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
     assert.equal(requests.find((item) => item.method === "draw_shape")?.params.filled, false);
     assert.equal(requests.find((item) => item.method === "flood_fill")?.params.contiguous, true);
@@ -192,6 +194,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
+      ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 0, height: 2 }],
+      ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -32769, y: 0, width: 1, height: 1 }],
+      ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, encoding: "png" }],
       ["create", { width: 16, height: 16, colorMode: "cmyk" }],
       ["resize_canvas", { ...target, width: 0, height: 12 }],
       ["resize_canvas", { ...target, width: 12, height: 12, offsetX: 1024 }],

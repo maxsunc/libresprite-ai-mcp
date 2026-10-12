@@ -1,5 +1,13 @@
 # Native changes from the pinned LibreSprite source
 
+## 2026-10-11 — v0.12.0 exact pixel reads
+
+`src/app/automation/bridge.cpp` reads explicit image-layer cels under the existing
+read lock and returns native unsigned values, rather than rendered composites.
+Signed rectangular samples are bounded before allocation. New GPL-2.0-only
+`src/app/automation/pixel_regions.h` builds complete bounded rows/runs and has
+GUI-independent tests. No ordinary editor model/renderer/command changes.
+
 This is a modified development editor, not the unmodified upstream release.
 The imported baseline is LibreSprite v1.2 at
 `5cb089be32f56b4ae559ae51f0c5666049f41bca`; the dependency revisions are in

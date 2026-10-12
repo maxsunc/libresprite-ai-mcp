@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.11.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.12.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -145,6 +145,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     description: "Inspect revision, layers/cels (cel/celData/image IDs, flags, optional nonempty text/color userData), zero-based frames/durations, palettes/tags, transparentIndex, document-wide selection bounds/count/visibility, active GUI frame/layer, saved state and undo availability. IDs are session-local; version fields are native telemetry. Use the revision for edits. Does not select/activate the document; works paused/inactive.",
     inputSchema: { documentId }, annotations: { readOnlyHint: true, openWorldHint: false },
   }, (params) => call("inspect", params));
+  server.registerTool("libresprite_read_pixels", {
+    description: "Read-only EXACT native pixels from one explicit image layer/cel, not a rendered composite. Required x/y/width/height are canvas-coordinate rectangles; signed origins allow off-canvas data. At most 16,384 samples, width/height 1-1024. encoding:runs(default) returns rows of [length,value] pairs, values returns rows of scalar values; runs never cross rows and include transparency. Values are unsigned RGBA 0xAABBGGRR, grayscale-alpha 0xAAVV, or exact palette indices. Includes effective indexed frame palette, transparentIndex, cel bounds/IDs/opacity, layer opacity/blend, revision/session. Outside/missing cel samples are transparent zero or transparentIndex, even on backgrounds; no renderer background fill. Raw alpha-zero payload retained. Visibility/locks/links/opacity/blend are NOT applied or changed. Works paused/inactive under read lock with idle GUI. No pixels, mask, focus, preferences, files, saved state or Undo/Redo changes.",
+    inputSchema: { documentId, layerId: documentId, frame, x: signedCoordinate, y: signedCoordinate, width: dimension, height: dimension, encoding: z.enum(["runs", "values"]).default("runs") },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  }, (params) => call("read_pixels", params));
   server.registerTool("libresprite_render", {
     description: "Return an actual composited PNG image plus metadata for a zero-based frame. Nearest-neighbor scale preserves pixel edges. At most 1,048,576 output pixels. Includes revision; no file is written.",
     inputSchema: { documentId, frame, scale: z.number().int().min(1).max(16).default(1) }, annotations: { readOnlyHint: true, openWorldHint: false },

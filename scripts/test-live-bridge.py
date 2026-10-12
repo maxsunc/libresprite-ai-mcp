@@ -20,6 +20,7 @@ from bridge_animation_cases import test_animation_workflows
 from bridge_editing_cases import test_editing_workflows
 from bridge_inspection_cases import test_frame_differences, test_isolated_previews, test_animation_diagnostics
 from bridge_correction_cases import test_animation_correction
+from bridge_pixel_region_cases import test_pixel_reads
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -64,6 +65,7 @@ def main():
     parser.add_argument("--editing-only", action="store_true", help="Run step 3 canvas/layer/mask/brush/index checks in a fresh GUI.")
     parser.add_argument("--inspection-only", action="store_true", help="Run read-only animation inspection checks in a fresh GUI.")
     parser.add_argument("--correction-only", action="store_true", help="Run atomic pixel/bitmap-region correction checks in a fresh GUI.")
+    parser.add_argument("--pixels-only", action="store_true", help="Run exact pixel-region checks in a fresh GUI.")
     options = parser.parse_args()
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
@@ -88,7 +90,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.11.0" and "edit_pixels" in status["methods"]
+                assert status["bridgeVersion"] == "0.12.0" and "read_pixels" in status["methods"]
                 assert status["connected"] and not status["pausedByUser"] and status["controlText"] == "AI: Paused | Resume"
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
@@ -97,6 +99,9 @@ def main():
                 assert client.request("list_documents")["documents"] == []
                 client.request("create", {"width": 16, "height": 16, "name": "Test"}, expected_error="PAUSED")
                 client.request("set_paused", {"paused": False})
+                if options.pixels_only:
+                    test_pixel_reads(client, assets, SMOKE)
+                    return
                 if options.correction_only:
                     test_animation_correction(client, assets, SMOKE)
                     return
@@ -117,6 +122,7 @@ def main():
                     assert client.request("status")["pid"] == process.pid
                     print("PASS: closing the last saved sprite leaves an empty, connected editor rather than quitting.")
                     return
+                test_pixel_reads(client, assets, SMOKE)
                 test_animation_correction(client, assets, SMOKE)
                 test_frame_differences(client, assets, SMOKE)
                 test_isolated_previews(client, assets, SMOKE)
