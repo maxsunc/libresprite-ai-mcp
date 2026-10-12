@@ -33,6 +33,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
         assert.equal(request.params.scale, 1);
         result = { revision: 2, pngBase64: "iVBORw0KGgo=", frame: 0 };
       }
+      if (request.method === "extract_mask") result = request.params.preview ? { revision: 2, pngBase64: "iVBORw0KGgo=" } : { revision: 2 };
       if (request.method === "set_paused" && request.params.paused === false) socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Resume locally in the editor", data: { code: "USER_PAUSED" } } }) + "\n");
       else if (request.method === "set_pixels") socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Paused", data: { code: "PAUSED" } } }) + "\n");
       else socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\n");
@@ -46,7 +47,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 65);
+    assert.equal(tools.length, 66);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -77,6 +78,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const valid = [
       ["create", { width: 16, height: 16, colorMode: "indexed" }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 2, width: 4, height: 2 }],
+      ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 8, height: 8, seed: { x: 1, y: 1 } }],
       ["resize_canvas", { ...target, width: 8, height: 12 }],
       ["crop_canvas", { ...target, x: 1, y: 2, width: 8, height: 8 }],
       ["duplicate_layer", { ...target, layerId: 1, parentId: null }],
@@ -134,13 +136,18 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const result = await client.callTool({ name: `libresprite_${method}`, arguments: args });
       assert.equal(result.isError, undefined, method);
       assert.equal(methods.at(-1), method);
-      const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer"].includes(method);
+      const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "extract_mask"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation", "read_pixels"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation", "read_pixels", "extract_mask"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "read_pixels")?.params.encoding, "runs");
+    assert.equal(requests.find((item) => item.method === "extract_mask")?.params.criterion, "nontransparent");
+    assert.equal(requests.find((item) => item.method === "extract_mask")?.params.preview, true);
+    const maskJson = await client.callTool({ name: "libresprite_extract_mask", arguments: { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, criterion: "value", value: 4294967295, preview: false } });
+    assert.equal(maskJson.isError, undefined);
+    assert.equal((maskJson.content as Array<{ type: string }>).some((item) => item.type === "image"), false);
     assert.equal(requests.find((item) => item.method === "remove_layer")?.params.recursive, false);
     assert.equal(requests.find((item) => item.method === "draw_shape")?.params.filled, false);
     assert.equal(requests.find((item) => item.method === "flood_fill")?.params.contiguous, true);
@@ -194,6 +201,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
+      ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 0, width: 1, height: 1 }],
+      ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, connectivity: 6 }],
+      ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, value: 4294967296 }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 0, height: 2 }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -32769, y: 0, width: 1, height: 1 }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1, encoding: "png" }],

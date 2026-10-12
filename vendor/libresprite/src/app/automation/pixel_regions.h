@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace app { namespace automation {
 
@@ -32,6 +33,32 @@ nlohmann::json pixelRows(int width, int height, const std::string& encoding, Rea
     rows.push_back(std::move(row));
   }
   return rows;
+}
+
+// Filter an explicit binary candidate mask to the 4/8-connected component at
+// the seed. Nonmatching seeds return EMPTY, never a whole-region fallback.
+inline std::string componentMask(int width, int height, const std::string& bits,
+                                 int seedX, int seedY, int connectivity) {
+  if (width < 1 || height < 1 || width > 1024 || height > 1024 ||
+      uint64_t(width) * height > 262144 || bits.size() != std::size_t(width) * height ||
+      bits.find_first_not_of("01") != std::string::npos || seedX < 0 || seedY < 0 ||
+      seedX >= width || seedY >= height || (connectivity != 4 && connectivity != 8))
+    throw std::invalid_argument("Component masks require bounded binary candidates and an in-region seed.");
+  std::string selected(bits.size(), '0');
+  int seed = seedY * width + seedX;
+  if (bits[seed] != '1') return selected;
+  std::vector<int> pending{seed}; selected[seed] = '1';
+  while (!pending.empty()) {
+    int index = pending.back(); pending.pop_back(); int x = index % width, y = index / width;
+    for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+      if ((!dx && !dy) || (connectivity == 4 && dx && dy)) continue;
+      int xx = x + dx, yy = y + dy;
+      if (xx < 0 || xx >= width || yy < 0 || yy >= height) continue;
+      int next = yy * width + xx;
+      if (bits[next] == '1' && selected[next] == '0') { selected[next] = '1'; pending.push_back(next); }
+    }
+  }
+  return selected;
 }
 
 }} // namespace app::automation

@@ -118,3 +118,69 @@ def test_pixel_reads(client, assets, smoke):
     assert case.read(x=-2, y=2, width=4, height=1)["rows"] == [[7, 1, 2, 0]]
     case.close()
     print("PASS: exact raw RGBA/indexed/grayscale values and runs, invisible payloads/off-canvas/padding, palettes/opacity, hidden/locked/linked/background/missing cels, paused/inactive reads and unchanged save/redo/mask/focus with bounds/validation guards.")
+
+
+def test_pixel_masks(client, assets, smoke):
+    case = RegionCase(client, assets, smoke)
+    doc = case.use(client.request("create", {"width": 8, "height": 8, "name": "Mask extraction"}))
+    red = {"r": 200, "g": 50, "b": 60, "a": 255}
+    case.edit("set_pixels", layerId=case.layer, frame=0, pixels=[{"x": x, "y": y, **color} for x, y, color in ((1, 1, red), (2, 2, {**red, "a": 128}), (3, 3, red), (6, 6, red))])
+    case.edit("add_frame", index=1)
+    case.edit("set_bitmap_selection", x=0, y=0, width=2, height=2, bits="1001")
+    case.edit("draw_stroke", layerId=case.layer, frame=0, points=[{"x": 0, "y": 7}], color=red)
+    case.edit("undo")
+    case.edit("update_layer", layerId=case.layer, visible=False, editable=False)
+    case.edit("save", path="mask-before.ase")
+    # Put a separate edit into redo after the saved baseline.
+    case.edit("create_layer", name="Redo"); case.edit("undo")
+    before = case.current(); stored = (assets / "mask-before.ase").read_bytes()
+
+    def extract(error=None, **params):
+        return client.request("extract_mask", {"documentId": case.document_id, "layerId": case.layer, "frame": 0,
+            "x": 0, "y": 0, "width": 8, "height": 8, **params}, expected_error=error)
+
+    client.request("set_paused", {"paused": True})
+    result = extract()
+    expected = "".join("1" if (i % 8, i // 8) in ((1, 1), (2, 2), (3, 3), (6, 6)) else "0" for i in range(64))
+    assert result["mask"]["bits"] == expected and result["selectedPixels"] == 4
+    assert result["bounds"] == {"x": 1, "y": 1, "width": 6, "height": 6}
+    assert case.decode(result) == (8, 8, b"".join(bytes((255, 255, 255, 255)) if b == "1" else bytes(4) for b in expected))
+    assert extract(minAlpha=129)["selectedPixels"] == 3
+    assert extract(criterion="value", value=int.from_bytes(bytes((200, 50, 60, 128)), "little"))["selectedPixels"] == 1
+    four = extract(seed={"x": 1, "y": 1}, preview=False)
+    assert four["selectedPixels"] == 1 and "pngBase64" not in four
+    eight = extract(seed={"x": 1, "y": 1}, connectivity=8)
+    assert eight["selectedPixels"] == 3 and eight["mask"]["bits"][6 * 8 + 6] == "0"
+    assert extract(seed={"x": 0, "y": 0})["bounds"] is None
+    assert extract(frame=1)["mask"]["bits"] == "0" * 64
+    for params, code in (({"x": 7, "width": 2}, "OUTSIDE_CANVAS"), ({"seed": {"x": 7, "y": 7}, "width": 4}, "INVALID_PARAMS"), ({"connectivity": 8}, "INVALID_PARAMS"), ({"criterion": "value"}, "INVALID_PARAMS"), ({"criterion": "value", "value": 0, "minAlpha": 1}, "INVALID_PARAMS"), ({"value": 0}, "INVALID_PARAMS"), ({"criterion": "value", "value": 4294967296}, "INVALID_PARAMS"), ({"preview": "yes"}, "INVALID_PARAMS"), ({"sessionId": "bad"}, "SESSION_MISMATCH")):
+        extract(error=code, **params)
+    assert case.current() == before and (assets / "mask-before.ase").read_bytes() == stored
+    client.request("set_paused", {"paused": False})
+    other = client.request("create", {"width": 1024, "height": 1024, "name": "Mask limits"})
+    client.request("set_paused", {"paused": True})
+    assert extract()["mask"] == result["mask"] and case.current()["revision"] == before["revision"]
+    assert client.request("list_documents")["activeDocumentId"] == other["documentId"]
+    client.request("extract_mask", {"documentId": other["documentId"], "layerId": other["layers"][0]["layerId"], "frame": 0, "x": 0, "y": 0, "width": 1024, "height": 257}, expected_error="LIMIT_EXCEEDED")
+    client.request("set_paused", {"paused": False})
+    for mode, background in ((8, False), (8, True), (16, False), (32, False)):
+        name = f"mask-raw-{mode}-{background}.ase"
+        fixture(assets / name, mode=mode, background=background, linked=True)
+        if mode == 32:
+            # This fixture is linked, so only its owner needs the payload replacement.
+            replace_payload(assets / name, bytes((11, 22, 33, 0)))
+        case.use(client.request("open", {"path": name}))
+        client.request("set_paused", {"paused": True})
+        result = extract(x=0, y=2, width=2, height=2, frame=1)
+        assert result["mask"]["bits"] == ("1111" if background else "1011")
+        if mode == 8:
+            assert extract(criterion="value", value=2)["selectedPixels"] == 2  # Off-canvas third index isn't counted.
+            extract(error="INVALID_PARAMS", minAlpha=2)
+            extract(error="INVALID_PARAMS", criterion="value", value=256)
+        if mode == 16:
+            assert extract(x=0, y=2, width=2, height=2, minAlpha=129)["mask"]["bits"] == "0011"
+        if mode == 32:
+            assert extract(criterion="value", value=int.from_bytes(bytes((11, 22, 33, 0)), "little"))["selectedPixels"] == 1
+        client.request("set_paused", {"paused": False})
+    case.close()
+    print("PASS: raw alpha/value bitmap masks and exact PNGs/counts/bounds, seeded 4/8 components/empty seeds, missing/hidden/locked/linked/background/indexed/grayscale cels, JSON-only previews, paused/inactive reads and selection/save/redo/focus/resource preservation.")

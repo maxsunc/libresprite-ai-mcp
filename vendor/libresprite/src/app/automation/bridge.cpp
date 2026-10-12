@@ -8,6 +8,7 @@
 // Updated 2026-10-09: bounded playback-order loop and millisecond timing diagnostics.
 // Updated 2026-10-09: atomic explicit multi-frame pixel and masked-region correction.
 // Updated 2026-10-11: bounded exact native cel pixel reads, including off-canvas samples.
+// Updated 2026-10-11: read-only raw-value/alpha masks and seeded connected components.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -714,6 +715,67 @@ private:
     result["encoding"] = encoding; result["sampleCount"] = area.w * area.h;
     result["rows"] = automation::pixelRows(area.w, area.h, encoding,
       [&](int x, int y) { return rawSample(sprite, target, x + area.x, y + area.y); });
+    return result;
+  }
+  Json extractMask(Document* document, const Json& params) {
+    auto sprite = document->sprite(); auto target = rawTarget(sprite, params);
+    auto area = pixelRect(params, 262144, false);
+    require(sprite->bounds().contains(area), "OUTSIDE_CANVAS", "Extraction's explicit rectangle must fit the canvas; clipping is refused.");
+    auto criterion = params.contains("criterion") ? text(params, "criterion", 24) : "nontransparent";
+    require(criterion == "nontransparent" || criterion == "value", "INVALID_PARAMS", "criterion must be nontransparent or value.");
+    int minAlpha = params.contains("minAlpha") ? integer(params, "minAlpha", 1, 255) : 1;
+    color_t value = 0;
+    if (criterion == "value") {
+      require(params.contains("value") && params["value"].is_number_integer() && !params.contains("minAlpha"),
+              "INVALID_PARAMS", "Exact value matching requires value, without minAlpha.");
+      auto number = params["value"].get<int64_t>();
+      int64_t maximum = sprite->pixelFormat() == IMAGE_RGB ? 4294967295LL : sprite->pixelFormat() == IMAGE_GRAYSCALE ? 65535 : 255;
+      require(number >= 0 && number <= maximum, "INVALID_PARAMS", "value must fit this sprite's native pixel packing.");
+      value = color_t(number);
+    } else {
+      require(!params.contains("value"), "INVALID_PARAMS", "value requires criterion:value.");
+      require(sprite->pixelFormat() != IMAGE_INDEXED || minAlpha == 1, "INVALID_PARAMS", "Indexed occupancy uses the transparent index, not palette alpha/minAlpha.");
+    }
+    int connectivity = params.contains("connectivity") ? integer(params, "connectivity", 4, 8) : 4;
+    require(connectivity == 4 || connectivity == 8, "INVALID_PARAMS", "connectivity must be 4 or 8.");
+    int seedX = 0, seedY = 0;
+    bool component = params.contains("seed");
+    require(component || !params.contains("connectivity"), "INVALID_PARAMS", "connectivity requires an explicit seed.");
+    if (component) {
+      seedX = integer(params["seed"], "x", 0, sprite->width() - 1);
+      seedY = integer(params["seed"], "y", 0, sprite->height() - 1);
+      require(area.contains(seedX, seedY), "INVALID_PARAMS", "seed must lie within the supplied rectangle.");
+    }
+    bool preview = params.contains("preview") ? boolean(params, "preview") : true;
+    std::string bits(size_t(area.w) * area.h, '0');
+    for (int y = 0; y < area.h; ++y) for (int x = 0; x < area.w; ++x) {
+      auto sample = rawSample(sprite, target, x + area.x, y + area.y);
+      bool matched = criterion == "value" ? sample == value :
+        sprite->pixelFormat() == IMAGE_RGB ? rgba_geta(sample) >= minAlpha :
+        sprite->pixelFormat() == IMAGE_GRAYSCALE ? graya_geta(sample) >= minAlpha :
+        target.cel && target.cel->bounds().contains(x + area.x, y + area.y) && (target.layer->isBackground() || sample != sprite->transparentColor());
+      if (matched) bits[size_t(y) * area.w + x] = '1';
+    }
+    if (component) bits = automation::componentMask(area.w, area.h, bits, seedX - area.x, seedY - area.y, connectivity);
+    automation::PixelBounds bounds; size_t selected = 0;
+    for (int y = 0; y < area.h; ++y) for (int x = 0; x < area.w; ++x) if (bits[size_t(y) * area.w + x] == '1') {
+      ++selected; bounds.add(x + area.x, y + area.y);
+    }
+    auto result = previewMetadata(document); rawMetadata(result, sprite, target);
+    result["schema"] = "libresprite-extracted-mask-v1";
+    result["mask"] = {{"x", area.x}, {"y", area.y}, {"width", area.w}, {"height", area.h}, {"bits", bits}};
+    result["selectedPixels"] = selected; result["bounds"] = bounds.json(); result["criterion"] = criterion;
+    result["value"] = criterion == "value" ? Json(value) : Json(nullptr);
+    result["minAlpha"] = criterion == "nontransparent" ? Json(minAlpha) : Json(nullptr);
+    result["seed"] = component ? Json{{"x", seedX}, {"y", seedY}} : Json(nullptr);
+    result["connectivity"] = component ? Json(connectivity) : Json(nullptr);
+    if (preview) {
+      ImageRef image(Image::create(IMAGE_RGB, area.w, area.h)); image->clear(0);
+      for (int y = 0; y < area.h; ++y) for (int x = 0; x < area.w; ++x)
+        if (bits[size_t(y) * area.w + x] == '1') image->putPixel(x, y, rgba(255, 255, 255, 255));
+      result["outputWidth"] = area.w; result["outputHeight"] = area.h;
+      addPng(result, encodePng(image.get()));
+    }
     return result;
   }
   Json previewAsset(const Json& params) {
@@ -2407,7 +2469,7 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
     if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.12.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
@@ -2432,7 +2494,7 @@ private:
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation" || method == "read_pixels";
+    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation" || method == "read_pixels" || method == "extract_mask";
     require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
@@ -2460,6 +2522,7 @@ private:
       DocumentReader reader(document, 0);
       if (method == "inspect") return inspect(document);
       if (method == "read_pixels") return readPixels(document, params);
+      if (method == "extract_mask") return extractMask(document, params);
       if (method == "contact_sheet") return contactSheet(document, params);
       if (method == "render_onion_skin") return renderOnionSkin(document, params);
       if (method == "render_selection") return renderSelection(document, params);

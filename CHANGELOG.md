@@ -6,7 +6,10 @@
   rectangles and complete row/value or row-run encodings. Raw invisible payloads,
   off-canvas samples, effective indexed palettes and cel/layer metadata are retained.
 - Paused/inactive/hidden/locked/linked/background reads preserve native state.
-- 65 MCP tools; existing artwork, editors and approved packages are unchanged.
+- Read-only full-rectangle raw alpha/value masks, optional seeded 4/8-connected
+  components and white-on-transparent previews. Empty seeds never fall back to
+  whole-region selection; the GUI mask is never read or changed.
+- 66 MCP tools; existing artwork, editors and approved packages are unchanged.
 
 ## 0.11.0 — Atomic animation correction (2026-10-09)
 

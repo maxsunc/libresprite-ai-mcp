@@ -37,3 +37,36 @@ use `libresprite_render_layer` separately to inspect appearance.
 
 Rebuild the native editor/server and launch a NEW development window for updated
 tools. Already-running editors and the approved v0.9.0 package are not replaced.
+
+## Extract an explicit mask
+
+`libresprite_extract_mask` uses the same required image layer/frame and rectangle,
+but origins are in-canvas and the WHOLE rectangle must fit. At most **262,144
+samples** are examined; clipping is refused. It never borrows or changes the GUI
+selection. Raw hidden/locked/linked/background cels can be read while paused/inactive.
+
+- `criterion: nontransparent` (default): stored RGBA/grayscale alpha must be at
+  least `minAlpha` (1…255, default 1). Indexed pixels match when their stored index
+  differs from `transparentIndex`, regardless of palette alpha. On an indexed
+  background all stored cel pixels match. Indexed `minAlpha` other than 1 is refused.
+- `criterion: value`: supply an unsigned packed `value` in the sprite's native
+  range, with no `minAlpha`. Matching is exact, including alpha-zero payloads and
+  transparent padding outside/missing cels. No palette conversion or tolerance.
+- Optional absolute `seed: {x,y}` limits matches to that seed's component WITHIN
+  the supplied rectangle. `connectivity` is 4 (default) or 8, and requires a seed.
+  A seed outside the rectangle is refused; a nonmatching seed returns an empty mask.
+- `preview: true` (default) adds an unscaled region-sized PNG: selected pixels
+  white, others transparent. `preview: false` returns JSON only.
+
+```json
+{ "documentId": 1, "layerId": 2, "frame": 0,
+  "x": 0, "y": 0, "width": 16, "height": 16,
+  "criterion": "nontransparent", "seed": { "x": 4, "y": 8 }, "connectivity": 4 }
+```
+
+The returned `mask` is `{x,y,width,height,bits}` with full row-major binary text,
+plus `selectedPixels` and minimal canvas-coordinate `bounds` (null if empty).
+Nonempty masks can be passed directly to `translate_regions` or explicitly used
+to set a GUI selection in a SEPARATE mutation. Empty masks have all-zero bits:
+editing tools requiring nonempty masks will refuse them, not edit the whole cel.
+No smoothing, filling holes, landmarks or implicit fallback is performed.

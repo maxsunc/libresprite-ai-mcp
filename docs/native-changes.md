@@ -8,6 +8,14 @@ Signed rectangular samples are bounded before allocation. New GPL-2.0-only
 `src/app/automation/pixel_regions.h` builds complete bounded rows/runs and has
 GUI-independent tests. No ordinary editor model/renderer/command changes.
 
+## 2026-10-11 — v0.12.0 read-only mask extraction
+
+The bridge samples bounded raw-cel alpha/values into an explicit bitmap and uses
+`pixel_regions.h` for linear, bounded seeded 4/8-component traversal. It returns
+JSON/optional region PNG without creating a document mask or changing flags,
+preferences or history. Indexed occupancy follows raw index/background semantics,
+not palette/renderer alpha. Empty seeds have no whole-region fallback.
+
 This is a modified development editor, not the unmodified upstream release.
 The imported baseline is LibreSprite v1.2 at
 `5cb089be32f56b4ae559ae51f0c5666049f41bca`; the dependency revisions are in

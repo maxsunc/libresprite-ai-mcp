@@ -23,8 +23,11 @@ class PixelRegionsTest(unittest.TestCase):
 #include <vector>
 int main() {
   nlohmann::json p; std::cin >> p;
-  int w = p["width"], h = p["height"]; auto values = p["values"].get<std::vector<uint32_t>>();
-  try { std::cout << nlohmann::json{{"rows", app::automation::pixelRows(w,h,p["encoding"], [&](int x,int y){return values.at(y*w+x);})}}; }
+  int w = p["width"], h = p["height"];
+  try {
+    if (p.contains("bits")) std::cout << nlohmann::json{{"bits", app::automation::componentMask(w,h,p["bits"],p["seedX"],p["seedY"],p["connectivity"])}};
+    else { auto values = p["values"].get<std::vector<uint32_t>>(); std::cout << nlohmann::json{{"rows", app::automation::pixelRows(w,h,p["encoding"], [&](int x,int y){return values.at(y*w+x);})}}; }
+  }
   catch (const std::invalid_argument&) { std::cout << nlohmann::json{{"invalid",true}}; }
 }''')
         cls.executable = root / "pixels"
@@ -56,3 +59,28 @@ int main() {
             self.assertTrue(self.request(width=w, height=h, values=[], encoding=encoding)["invalid"])
         rows = self.request(width=1024, height=16, values=[7] * 16384, encoding="runs")["rows"]
         self.assertEqual(rows, [[[1024, 7]]] * 16)
+
+    def test_components_empty_seeds_diagonals_holes_and_bounds(self):
+        params = dict(width=3, height=3, bits="100010001", seedX=0, seedY=0)
+        self.assertEqual(self.request(**params, connectivity=4)["bits"], "100000000")
+        self.assertEqual(self.request(**params, connectivity=8)["bits"], params["bits"])
+        self.assertEqual(self.request(**{**params, "seedX": 1}, connectivity=8)["bits"], "0" * 9)
+        self.assertEqual(self.request(width=3, height=3, bits="111101111", seedX=0, seedY=0, connectivity=4)["bits"], "111101111")
+        for changes in ({"bits": "bad"}, {"seedX": 3}, {"seedY": -1}, {"connectivity": 6}, {"width": 1024, "height": 257, "bits": "1" * (1024 * 257)}):
+            self.assertTrue(self.request(**{**params, "connectivity": 4, **changes})["invalid"])
+        self.assertEqual(self.request(width=512, height=512, bits="1" * 262144, seedX=0, seedY=0, connectivity=4)["bits"], "1" * 262144)
+
+    def test_randomized_components_match_independent_reference(self):
+        rng = random.Random(21102026)
+        for _ in range(20):
+            w, h = 8, 7; bits = "".join(rng.choice("01") for _ in range(w * h))
+            x, y, connectivity = rng.randrange(w), rng.randrange(h), rng.choice([4, 8])
+            selected, pending = set(), [(x, y)]
+            while pending:
+                point = pending.pop(); xx, yy = point
+                if point in selected or not (0 <= xx < w and 0 <= yy < h) or bits[yy * w + xx] != "1":
+                    continue
+                selected.add(point)
+                pending.extend((xx + dx, yy + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx or dy) and (connectivity == 8 or not (dx and dy)))
+            expected = "".join("1" if (i % w, i // w) in selected else "0" for i in range(w * h))
+            self.assertEqual(self.request(width=w, height=h, bits=bits, seedX=x, seedY=y, connectivity=connectivity)["bits"], expected)
