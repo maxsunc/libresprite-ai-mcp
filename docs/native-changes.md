@@ -124,3 +124,14 @@ The bridge also reuses native tag playback expansion for read-only loop/timing
 diagnostics, caches bounded unique rendered frames and directed comparisons under
 the document read lock, and measures exact exposure/GIF delays using the standalone
 analysis header. No native animation-editing or ordinary playback behavior changes.
+
+## 2026-10-09 — v0.11.0 atomic animation correction
+
+`src/app/automation/bridge.cpp` prevalidates explicit multi-target pixel/bitmap-region
+plans and aggregate worst-case native crop growth before allocating patches. It
+prepares all corrections from original unshared cel images, then uses native
+PatchCel/AddCel commands in one transaction without borrowing/moving the GUI mask.
+Dry runs and unchanged batches create no commands/history. No ordinary editor
+command/model behavior changes. New GPL-2.0-only
+`src/app/automation/animation_correction.h` contains GUI-independent sparse translation
+and mask validation, with standalone overlap/raw-value/limit regressions.

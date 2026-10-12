@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.10.0.** This is an independent development project, not an
+**Source alpha — v0.11.0.** This is an independent development project, not an
 official LibreSprite release. A stock LibreSprite installation does not contain
 this bridge. A relocatable Apple Silicon review-package builder is now provided;
 downloadable signed/notarized releases are not published yet.
@@ -114,7 +114,7 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **62 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **64 tools**, and limitations.
 
 Read-only frame differences highlight added/removed/modified rendered pixels
 and report exact counts, bounds, and occupancy centroids. Isolated layer/group
@@ -126,6 +126,15 @@ limitations without changing the animation. See
 has not been rebuilt; these source features require a new development editor.
 Use `node scripts/demo-inspection.mjs` for a separate generated review animation
 and saved inspection PNG/JSON results; it leaves its editor paused and open.
+
+Atomic animation correction now supports explicit multi-frame/layer RGBA or indexed
+pixel batches and per-frame masked-region moves/copies, with dry-run change summaries
+and one native Undo step. GUI selection/focus, other pixels and animation metadata
+are preserved. See [correction semantics](docs/animation-correction.md).
+This v0.11.0 milestone is awaiting user review; no personal artwork is edited by tests.
+Use `node scripts/demo-correction.mjs` for an independent generated before/after
+animation with dry-run summaries and two undoable correction steps; review with
+[the v0.11 checklist](docs/testing-v0.11.md).
 
 The opt-in editor now has a persistent **AI status / Pause / Resume** button in
 the bottom-right status bar. A pause made there cannot be remotely overridden.

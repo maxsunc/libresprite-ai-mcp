@@ -115,6 +115,8 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_duplicate_frames` | Ordered copies of explicit pre-edit frame indices |
 | `libresprite_reorder_frames` | Full permutation with pose timing/link/tag guards |
 | `libresprite_edit_cels` | Atomic explicit multi-frame/layer cel property/transforms |
+| `libresprite_edit_pixels` | Atomic per-target RGBA/indexed pixel correction with dry run |
+| `libresprite_translate_regions` | Atomic per-frame explicit bitmap-region move/copy |
 | `libresprite_set_frame_durations` | Atomic explicit frame/timing batch |
 | `libresprite_transform_selection` | Selected-region flips/rotations across explicit frames |
 | `libresprite_resize_canvas` | Resize/shift all frames while preserving off-canvas pixels |
@@ -166,7 +168,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **62 tools** in server/bridge version **0.10.0**. Rebuild the editor
+There are **64 tools** in server/bridge version **0.11.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -240,8 +242,9 @@ revision, and idle GUI/target views. Frame arrays use explicit **zero-based**
 indices rather than an implicit timeline selection. Each request is one native
 undo transaction; invalid later targets cannot leave earlier targets edited.
 These are targeted native operations, not an arbitrary-script or general batch
-dispatcher. Cross-document/system-clipboard copy and general multi-frame
-painting are not implemented by these tools.
+dispatcher. Cross-document/system-clipboard copy is not implemented by these tools.
+For explicit multi-frame pixel/bitmap-region correction added in v0.11.0, see
+[animation correction](animation-correction.md).
 
 ### Copy a cel
 

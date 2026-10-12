@@ -1,5 +1,19 @@
 # Development milestones
 
+## 0.11.0 — Atomic animation correction (2026-10-09)
+
+- Explicit multi-frame/layer pixel replacement/erasure for RGBA or exact indexed
+  sprites; duplicate pixel coordinates resolve last-wins after full validation.
+- Per-target sparse bitmap-region moves/copies across RGBA/indexed/grayscale frames,
+  reading original cel samples for overlap safety. No shared GUI-mask fallback,
+  smoothing, clipping, automatic palette conversion or implicit unlinking.
+- Dry-run exact change summaries, single-step native Undo for changed batches,
+  no-op history preservation, and pre-allocation aggregate scratch/growth bounds.
+- Timing/tags/palettes/opacity/user data, unrelated/off-canvas pixels and GUI
+  selection/focus are preserved (native trimming may remove transparent padding).
+- 64 MCP tools, verified with disposable native GUI tests and a real-MCP demo. CI/platform,
+  rigging, auto-inbetweens and edits to existing working artwork are out of scope.
+
 ## 0.10.0 — Read-only animation inspection (2026-10-09)
 
 - Frame differences: native rendered RGBA comparison with a green/red/yellow

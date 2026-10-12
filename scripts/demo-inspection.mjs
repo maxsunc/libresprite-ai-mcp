@@ -39,7 +39,7 @@ const rgba = (r, g, b, a = 255) => ({ r, g, b, a });
 try {
   await client.connect(transport);
   transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 62);
+  assert.ok((await client.listTools()).tools.some((tool) => tool.name === "libresprite_analyze_animation"));
   const launched = await request("launch");
   const deadline = Date.now() + 20_000;
   let status;
@@ -50,7 +50,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  assert.equal(status.bridgeVersion, "0.10.0");
+  assert.ok(status.methods.includes("analyze_animation"));
   await request("set_paused", { paused: false });
   const document = await request("create", { width: 32, height: 24, name: "Animation inspection — generated arrow" });
   documentId = document.documentId;

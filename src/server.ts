@@ -13,7 +13,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.10.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.11.0" });
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
@@ -42,6 +42,11 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   const maskMode = z.enum(["replace", "add", "subtract", "intersect"]).default("replace");
   const bits = z.string().min(1).max(262144).regex(/^[01]+$/);
   const blendMode = z.enum(["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"]);
+  const correctionPixel = z.union([
+    z.object({ x: coordinate, y: coordinate, r: channel, g: channel, b: channel, a: channel }).strict(),
+    z.object({ x: coordinate, y: coordinate, index: channel }).strict(),
+  ]);
+  const correctionOptions = { ...target, dryRun: z.boolean().default(false), label: z.string().min(1).max(120).optional() };
 
   async function call(method: string, params: BridgeResult = {}) {
     try {
@@ -340,6 +345,16 @@ export function createServer(options: ServerOptions): { server: McpServer; close
     inputSchema: { ...paintTarget, pixels: z.array(z.object({ x: coordinate, y: coordinate, index: channel })).min(1).max(16384) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, (params) => call("set_indexed_pixels", params));
+  server.registerTool("libresprite_edit_pixels", {
+    description: "Atomic pixel corrections across 1-256 explicit unique layerId/frame targets in the ACTIVE sprite. Each edit supplies pixels (x/y/r/g/b/a for RGBA OR x/y/index for indexed); total1-16384 inputs, duplicates within a cel use last value after validating every input. Never mix modes/remap/blend; RGBA alpha0 erases to transparent0, indexed transparentIndex erases. Validates ALL targets, values and aggregate growth before mutation. Changed requests are ONE native Undo step; unchanged preserves redo/revision. Missing cels created only by changed nontransparent pixels. All unlisted/off-canvas pixels retained (native trimming may remove transparent padding). Ignores and preserves GUI selection mask/frame/layer, timing/tags/palettes/cel opacity/user data. Refuses background/locked/linked/shared-image targets or grayscale painting; no implicit unlink. dryRun:true returns exact wouldEditCels/changedPixels/per-target bounds without mutation (same active/revision/resumed/idle guards). Bounded32MiB scratch/worst-case sprite growth; no automatic retry.",
+    inputSchema: { ...correctionOptions, edits: z.array(z.object({ layerId: documentId, frame, pixels: z.array(correctionPixel).min(1).max(16384) }).strict()).min(1).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("edit_pixels", params));
+  server.registerTool("libresprite_translate_regions", {
+    description: "Atomically move/copy explicit per-frame bitmap regions across 1-256 unique layerId/frame targets, ONE native Undo step. Each edit supplies its OWN mask x/y/width/height/bits (row-major0/1, exact length, nonempty, <=262144 bits), integer dx/dy, copy:false(default) moves/true copies. Whole source/destination footprints must fit canvas; clipping refused. Snapshot raw ORIGINAL cel values before overlapping clears/pastes; selected transparent pixels replace destination, holes/unrelated/off-canvas pixels untouched (native trim may remove transparent padding). RGBA/indexed/grayscale lossless; no blending/conversion/resampling/implicit unlink. Same-cel only, no source-frame/cross-document transfer. Missing cel is transparent/no-op. GUI document-wide selection is neither read nor changed; focus/timing/tags/palettes/opacity/user data preserved. Refuses background/locked/linked/shared targets, duplicate target pairs and oversized aggregate scratch/growth. dx/dy0 and unchanged batches preserve revision/redo. dryRun:true reports exact changes without mutation; all requests require ACTIVE document/current revision/resumed/idle views. No automatic retry.",
+    inputSchema: { ...correctionOptions, edits: z.array(z.object({ layerId: documentId, frame, mask: z.object({ x: coordinate, y: coordinate, width: dimension, height: dimension, bits }).strict(), dx: z.number().int().min(-1023).max(1023), dy: z.number().int().min(-1023).max(1023), copy: z.boolean().default(false) }).strict()).min(1).max(256) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  }, (params) => call("translate_regions", params));
   server.registerTool("libresprite_copy_cel", {
     description: "Copy a whole source cel to an existing destination layerId/frame in the SAME active sprite, as one native undo step. No clipboard or frame creation. SourceLayerId/sourceFrame must have an image cel (hidden/locked/linked sources can be read). Destination must be editable/transparent/unlinked/unshared. Existing destination refuses unless overwrite:true; replacement includes transparent pixels, full off-canvas data, position, opacity, and cel user data. Always independent, ignores selections/continuous preference. RGBA/indexed/grayscale; indexed requires equal palettes (no remapping). Same source/destination is a no-op. Requires revision/resumed/idle bridge; focuses destination on success.",
     inputSchema: { ...celTarget, sourceLayerId: documentId, sourceFrame: frame, overwrite: z.boolean().default(false) },

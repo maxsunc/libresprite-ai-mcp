@@ -6,12 +6,14 @@
 // Updated 2026-10-09: read-only rendered frame differences and motion measurements.
 // Updated 2026-10-09: isolated layer/group previews without live visibility changes.
 // Updated 2026-10-09: bounded playback-order loop and millisecond timing diagnostics.
+// Updated 2026-10-09: atomic explicit multi-frame pixel and masked-region correction.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "app/app.h"
 #include "app/automation/apng.h"
 #include "app/automation/animation_analysis.h"
+#include "app/automation/animation_correction.h"
 #include "app/automation/reorder_frames.h"
 #include "app/automation/reparent_layer.h"
 #include "app/automation/revision_metadata.h"
@@ -1695,6 +1697,181 @@ private:
     finish(transaction, document);
     if (maskChanged) document->generateMaskBoundaries();
   }
+  struct CorrectionPatch {
+    Layer* layer;
+    int frame;
+    gfx::Rect area;
+    ImageRef image;
+    gfx::Region region;
+    size_t changedPixels = 0;
+  };
+  color_t correctionSample(Sprite* sprite, Layer* layer, int frame, int x, int y) {
+    auto cel = layer->cel(frame);
+    return cel && cel->bounds().contains(x, y) ? cel->image()->getPixel(x - cel->x(), y - cel->y()) :
+           sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0);
+  }
+  void correctionLimits(Sprite* sprite, const std::vector<CorrectionPatch>& patches) {
+    uint64_t scratch = 0, predicted = spriteBytes(sprite);
+    for (const auto& patch : patches) if (!patch.area.isEmpty()) {
+      scratch += uint64_t(calculate_rowstride_bytes(sprite->pixelFormat(), patch.area.w)) * patch.area.h;
+      auto cel = patch.layer->cel(patch.frame);
+      auto grown = cel ? cel->bounds() | patch.area : patch.area;
+      require(grown.w <= 65535 && grown.h <= 65535, "LIMIT_EXCEEDED", "Correction would exceed native-file cel dimensions.");
+      uint64_t bytes = uint64_t(calculate_rowstride_bytes(sprite->pixelFormat(), grown.w)) * grown.h;
+      // Do not offset a later shrink against an earlier growth: native commands
+      // execute sequentially, and their worst-case intermediate crop must fit.
+      uint64_t old = cel ? imageBytes(cel->image()) : 0;
+      if (bytes > old) predicted += bytes - old;
+    }
+    require(scratch <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Correction patch scratch exceeds 32 MiB.");
+    require(predicted <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Correction's aggregate worst-case cel growth exceeds 32 MiB.");
+  }
+  void correctionRegion(Sprite* sprite, CorrectionPatch& patch) {
+    for (int y = 0; y < patch.area.h; ++y) {
+      int start = -1;
+      for (int x = 0; x <= patch.area.w; ++x) {
+        bool changed = x < patch.area.w && patch.image->getPixel(x, y) !=
+                       correctionSample(sprite, patch.layer, patch.frame, x + patch.area.x, y + patch.area.y);
+        if (changed) ++patch.changedPixels;
+        if (changed && start < 0) start = x;
+        if (!changed && start >= 0) { patch.region |= gfx::Region(gfx::Rect(start, y, x - start, 1)); start = -1; }
+      }
+    }
+  }
+  Json commitCorrections(Document* document, const Json& params,
+                         std::vector<CorrectionPatch>& patches, const std::string& defaultLabel) {
+    bool dryRun = params.contains("dryRun") ? boolean(params, "dryRun") : false;
+    auto label = params.contains("label") ? text(params, "label", 120) : defaultLabel;
+    Json result = {{"dryRun", dryRun}, {"changedPixels", 0}, {"editedCels", 0}, {"changes", Json::array()}};
+    size_t total = 0, count = 0;
+    for (const auto& patch : patches) if (patch.changedPixels) {
+      ++count; total += patch.changedPixels;
+      auto bounds = gfx::Rect(patch.region.bounds()).offset(patch.area.origin());
+      result["changes"].push_back({{"layerId", patch.layer->id()}, {"frame", patch.frame},
+                                  {"changedPixels", patch.changedPixels},
+                                  {"bounds", {{"x", bounds.x}, {"y", bounds.y}, {"width", bounds.w}, {"height", bounds.h}}}});
+    }
+    result["changedPixels"] = total;
+    result["wouldEditCels"] = count;
+    if (dryRun || !count) return result;
+    Transaction transaction(UIContext::instance(), label);
+    for (auto& patch : patches) if (!patch.region.isEmpty()) {
+      if (auto cel = patch.layer->cel(patch.frame))
+        transaction.execute(new cmd::PatchCel(cel, patch.image.get(), patch.region, patch.area.origin()));
+      else {
+        auto created = std::make_shared<Cel>(patch.frame, patch.image);
+        created->setPosition(patch.area.origin());
+        transaction.execute(new cmd::AddCel(patch.layer, created));
+      }
+    }
+    finish(transaction, document);
+    result["editedCels"] = count;
+    return result;
+  }
+  Json editPixels(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    require(sprite->pixelFormat() == IMAGE_RGB || sprite->pixelFormat() == IMAGE_INDEXED,
+            "UNSUPPORTED_COLOR_MODE", "Pixel correction requires RGBA or indexed sprites; no conversion is performed.");
+    require(params.contains("edits") && params["edits"].is_array() && !params["edits"].empty() && params["edits"].size() <= 256,
+            "INVALID_PARAMS", "Supply 1 to 256 explicit layer/frame pixel edits.");
+    std::vector<CorrectionPatch> patches;
+    std::vector<std::map<std::pair<int, int>, color_t>> values;
+    size_t inputs = 0;
+    for (const auto& entry : params["edits"]) {
+      auto layer = celLayer(document, entry);
+      int frame = integer(entry, "frame", 0, sprite->lastFrame());
+      independentImage(sprite, layer->cel(frame));
+      for (const auto& patch : patches)
+        require(patch.layer != layer || patch.frame != frame, "INVALID_PARAMS", "Each layer/frame can occur only once per correction batch.");
+      require(entry.contains("pixels") && entry["pixels"].is_array() && !entry["pixels"].empty() && entry["pixels"].size() <= 16384,
+              "INVALID_PARAMS", "Every pixel edit requires 1 to 16,384 explicit pixels.");
+      inputs += entry["pixels"].size();
+      require(inputs <= 16384, "LIMIT_EXCEEDED", "A correction batch supports at most 16,384 input pixels in total.");
+      std::map<std::pair<int, int>, color_t> pixels;
+      for (const auto& pixel : entry["pixels"]) {
+        int x = integer(pixel, "x", 0, sprite->width() - 1), y = integer(pixel, "y", 0, sprite->height() - 1);
+        color_t value;
+        if (sprite->pixelFormat() == IMAGE_INDEXED) {
+          require(!pixel.contains("r") && !pixel.contains("g") && !pixel.contains("b") && !pixel.contains("a"),
+                  "UNSUPPORTED_COLOR_MODE", "Indexed correction uses only exact indices, never RGBA conversion.");
+          value = indexedColor(sprite, frame, pixel);
+        } else {
+          require(!pixel.contains("index"), "UNSUPPORTED_COLOR_MODE", "RGBA correction requires explicit r/g/b/a, not an index.");
+          value = rgba(integer(pixel, "r", 0, 255), integer(pixel, "g", 0, 255), integer(pixel, "b", 0, 255), integer(pixel, "a", 0, 255));
+          if (!rgba_geta(value)) value = 0; // Alpha-zero replacement is an erase, not invisible payload creation.
+        }
+        pixels[{x, y}] = value; // Validate even overwritten inputs; final duplicate wins.
+      }
+      CorrectionPatch patch{layer, frame, {}, {}, {}, 0};
+      for (auto it = pixels.begin(); it != pixels.end();) {
+        if (it->second == correctionSample(sprite, layer, frame, it->first.first, it->first.second)) it = pixels.erase(it);
+        else { patch.area |= gfx::Rect(it->first.first, it->first.second, 1, 1); ++it; }
+      }
+      patches.push_back(std::move(patch)); values.push_back(std::move(pixels));
+    }
+    correctionLimits(sprite, patches); // No native images/commands allocated until all targets and growth validate.
+    for (size_t i = 0; i < patches.size(); ++i) if (!patches[i].area.isEmpty()) {
+      auto& patch = patches[i];
+      patch.image.reset(Image::create(sprite->pixelFormat(), patch.area.w, patch.area.h));
+      patch.image->setMaskColor(sprite->transparentColor());
+      patch.image->clear(sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0));
+      for (const auto& pixel : values[i]) {
+        int x = pixel.first.first - patch.area.x, y = pixel.first.second - patch.area.y;
+        patch.image->putPixel(x, y, pixel.second);
+        patch.region |= gfx::Region(gfx::Rect(x, y, 1, 1));
+      }
+      patch.changedPixels = values[i].size();
+    }
+    return commitCorrections(document, params, patches, "AI atomic pixel correction");
+  }
+  Json translateRegions(Document* document, const Json& params) {
+    auto sprite = document->sprite();
+    require(sprite->pixelFormat() == IMAGE_RGB || sprite->pixelFormat() == IMAGE_INDEXED || sprite->pixelFormat() == IMAGE_GRAYSCALE,
+            "UNSUPPORTED_COLOR_MODE", "Region correction supports native RGBA/indexed/grayscale values only.");
+    require(params.contains("edits") && params["edits"].is_array() && !params["edits"].empty() && params["edits"].size() <= 256,
+            "INVALID_PARAMS", "Supply 1 to 256 explicit layer/frame region edits.");
+    struct Region { gfx::Rect source; std::string bits; int dx, dy; bool copy; };
+    std::vector<CorrectionPatch> patches;
+    std::vector<Region> regions;
+    size_t maskPixels = 0;
+    for (const auto& entry : params["edits"]) {
+      auto layer = celLayer(document, entry);
+      int frame = integer(entry, "frame", 0, sprite->lastFrame());
+      independentImage(sprite, layer->cel(frame));
+      for (const auto& patch : patches)
+        require(patch.layer != layer || patch.frame != frame, "INVALID_PARAMS", "Each layer/frame can occur only once per correction batch.");
+      require(entry.contains("mask") && entry["mask"].is_object(), "INVALID_PARAMS", "Every region edit requires its own explicit bitmap mask.");
+      const auto& mask = entry["mask"];
+      gfx::Rect source(integer(mask, "x", 0, sprite->width() - 1), integer(mask, "y", 0, sprite->height() - 1),
+                       integer(mask, "width", 1, 1024), integer(mask, "height", 1, 1024));
+      auto bits = text(mask, "bits", 262144);
+      require(automation::validCorrectionMask(source.w, source.h, bits), "INVALID_PARAMS", "Mask requires width*height binary digits and at least one selected bit (max262,144).");
+      maskPixels += bits.size();
+      require(maskPixels <= MaxPixels, "LIMIT_EXCEEDED", "Aggregate region masks exceed 1,048,576 pixels.");
+      int dx = integer(entry, "dx", -1023, 1023), dy = integer(entry, "dy", -1023, 1023);
+      bool copy = entry.contains("copy") ? boolean(entry, "copy") : false;
+      require(sprite->bounds().contains(source), "OUTSIDE_CANVAS", "The whole explicit source mask must fit the canvas.");
+      auto destination = source; destination.offset(dx, dy);
+      require(sprite->bounds().contains(destination), "OUTSIDE_CANVAS", "Translated mask would leave the canvas. Clipping is refused.");
+      patches.push_back({layer, frame, dx || dy ? source | destination : gfx::Rect(), {}, {}, 0});
+      regions.push_back({source, bits, dx, dy, copy});
+    }
+    correctionLimits(sprite, patches);
+    for (size_t i = 0; i < patches.size(); ++i) if (!patches[i].area.isEmpty()) {
+      auto& patch = patches[i]; const auto& region = regions[i];
+      patch.image.reset(Image::create(sprite->pixelFormat(), patch.area.w, patch.area.h));
+      patch.image->setMaskColor(sprite->transparentColor());
+      auto read = [&](int x, int y) { return correctionSample(sprite, patch.layer, patch.frame, x, y); };
+      auto write = [&](int x, int y, color_t value) { patch.image->putPixel(x - patch.area.x, y - patch.area.y, value); };
+      for (int y = 0; y < patch.area.h; ++y) for (int x = 0; x < patch.area.w; ++x)
+        patch.image->putPixel(x, y, read(x + patch.area.x, y + patch.area.y));
+      automation::translateCorrectionRegion(region.source.x, region.source.y, region.source.w, region.source.h,
+                                            region.bits, region.dx, region.dy, region.copy,
+                                            sprite->pixelFormat() == IMAGE_INDEXED ? sprite->transparentColor() : color_t(0), read, write);
+      correctionRegion(sprite, patch);
+    }
+    return commitCorrections(document, params, patches, "AI atomic masked-region correction");
+  }
   void setPixels(Document* document, const Json& params) {
     auto sprite = document->sprite();
     auto target = paintLayer(document, params);
@@ -2179,9 +2356,9 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.10.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.11.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
@@ -2257,6 +2434,10 @@ private:
     if (method == "set_pixels") {
       // setPixels owns its transaction but reuses this writer lock.
       setPixels(document, params);
+    } else if (method == "edit_pixels") {
+      extra = editPixels(document, params);
+    } else if (method == "translate_regions") {
+      extra = translateRegions(document, params);
     } else if (method == "resize_canvas" || method == "crop_canvas") {
       extra = canvas(document, params, method == "crop_canvas");
     } else if (method == "duplicate_layer") {

@@ -46,7 +46,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 62);
+    assert.equal(tools.length, 64);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -66,6 +66,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(localPause.isError, true);
     assert.equal(JSON.parse((localPause.content as Array<{ text: string }>)[0]!.text).code, "USER_PAUSED");
     assert.equal(tools.find((tool) => tool.name === "libresprite_close_document")?.annotations?.destructiveHint, true);
+    for (const method of ["edit_pixels", "translate_regions"]) {
+      const annotations = tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations;
+      assert.equal(annotations?.readOnlyHint, false);
+      assert.equal(annotations?.destructiveHint, true);
+      assert.equal(annotations?.openWorldHint, false);
+    }
     const target = { documentId: 1, expectedRevision: 1 };
     const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
     const valid = [
@@ -78,6 +84,8 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["set_bitmap_selection", { ...target, x: 1, y: 2, width: 2, height: 2, bits: "1001" }],
       ["draw_brush_stroke", { ...paint, points: [{ x: 2, y: 2 }], brush: { width: 3, height: 3, bits: "010111010" } }],
       ["set_indexed_pixels", { ...target, layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 3 }] }],
+      ["edit_pixels", { ...target, edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, r: 20, g: 30, b: 40, a: 255 }] }, { layerId: 1, frame: 1, pixels: [{ x: 2, y: 3, r: 0, g: 0, b: 0, a: 0 }] }] }],
+      ["translate_regions", { ...target, edits: [{ layerId: 1, frame: 0, mask: { x: 1, y: 2, width: 2, height: 2, bits: "1001" }, dx: 1, dy: -1 }] }],
       ["create_layer", { ...target, name: "Ink" }],
       ["update_layer", { ...target, layerId: 1, visible: false, editable: false, opacity: 0, blendMode: "multiply" }],
       ["move_layer", { ...target, layerId: 1, afterLayerId: null }],
@@ -170,6 +178,12 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(requests.find((item) => item.method === "draw_brush_stroke")?.params.clipToCanvas, false);
     assert.equal(requests.find((item) => item.method === "set_polygon_selection")?.params.mode, "replace");
     assert.equal(requests.find((item) => item.method === "set_bitmap_selection")?.params.mode, "replace");
+    assert.equal(requests.find((item) => item.method === "edit_pixels")?.params.dryRun, false);
+    assert.equal(requests.find((item) => item.method === "translate_regions")?.params.dryRun, false);
+    assert.equal((requests.find((item) => item.method === "translate_regions")?.params.edits as Array<{ copy: boolean }>)[0]?.copy, false);
+    const dryRun = await client.callTool({ name: "libresprite_edit_pixels", arguments: { ...target, dryRun: true, edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 3 }] }] } });
+    assert.equal(dryRun.isError, undefined);
+    assert.equal(requests.at(-1)?.params.dryRun, true);
     const indexedBrush = await client.callTool({ name: "libresprite_draw_brush_stroke", arguments: { ...target, layerId: 1, frame: 0, index: 2, points: [{ x: 1, y: 1 }], brush: { width: 1, height: 1, bits: "1" }, respectSelection: true } });
     assert.equal(indexedBrush.isError, undefined);
     assert.equal(requests.at(-1)?.params.index, 2);
@@ -189,6 +203,14 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       ["draw_brush_stroke", { ...paint, points: [], brush: { width: 1, height: 1, bits: "1" } }],
       ["draw_brush_stroke", { ...paint, points: [{ x: 1, y: 2 }], brush: { width: 33, height: 1, bits: "1" } }],
       ["set_indexed_pixels", { ...target, layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 256 }] }],
+      ["edit_pixels", { ...target, edits: [] }],
+      ["edit_pixels", { ...target, edits: [{ layerId: 1, frame: 0, pixels: [] }] }],
+      ["edit_pixels", { ...target, edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 3, r: 1, g: 2, b: 3, a: 255 }] }] }],
+      ["edit_pixels", { ...target, edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, r: 1, g: 2, b: 3 }] }] }],
+      ["edit_pixels", { ...target, dryRun: "yes", edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, index: 3 }] }] }],
+      ["translate_regions", { ...target, edits: [{ layerId: 1, frame: 0, dx: 1, dy: 0 }] }],
+      ["translate_regions", { ...target, edits: [{ layerId: 1, frame: 0, mask: { x: 1, y: 2, width: 1, height: 1, bits: "x" }, dx: 1, dy: 0 }] }],
+      ["translate_regions", { ...target, edits: [{ layerId: 1, frame: 0, mask: { x: 1, y: 2, width: 1, height: 1, bits: "1" }, dx: 1024, dy: 0 }] }],
       ["create_layer", { ...target, name: "", type: "unknown" }],
       ["update_layer", { ...target, layerId: 1, opacity: 256 }],
       ["update_layer", { ...target, layerId: 1, blendMode: "unknown" }],
