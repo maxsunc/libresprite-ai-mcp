@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packagedMcp = process.env.LIBRESPRITE_MCP_ROOT;
 const directory = path.join(root, ".runtime", `correction-${Date.now().toString(36)}`);
 const assets = path.join(directory, "assets");
 const socketPath = path.join(directory, "b.sock");
@@ -15,7 +16,8 @@ await mkdir(assets, { recursive: true, mode: 0o700 });
 const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
 delete environment.SDL_VIDEODRIVER;
 const transport = new StdioClientTransport({
-  command: process.execPath, args: [path.join(root, "dist/index.js")],
+  command: packagedMcp ? "bash" : process.execPath,
+  args: [packagedMcp ? path.join(packagedMcp, "start-mcp.sh") : path.join(root, "dist/index.js")],
   env: { ...environment, LIBRESPRITE_SOCKET: socketPath, LIBRESPRITE_ASSET_ROOT: assets }, stderr: "pipe",
 });
 const client = new Client({ name: "libresprite-correction-review", version: "0.11.0" });
@@ -156,7 +158,8 @@ try {
   const after = await request("inspect", { documentId });
   unchangedMetadata(baseline, after);
   assert.equal(after.layers.find((layer) => layer.layerId === hidden).visible, false);
-  const review = { ...launched, socketPath, assetRoot: assets, documentId, revision: after.revision, base, group, moving, hidden, tagId, paused: true, correctionUndoSteps: 2 };
+  const review = { ...launched, ...(packagedMcp ? { packagedMcp: path.resolve(packagedMcp) } : {}),
+    socketPath, assetRoot: assets, documentId, revision: after.revision, base, group, moving, hidden, tagId, paused: true, correctionUndoSteps: 2 };
   await writeFile(path.join(directory, "review.json"), JSON.stringify(review, null, 2) + "\n");
   console.log(JSON.stringify(review, null, 2));
   console.log("PASS: real-MCP pixel/region dry runs, atomic apply and Undo/Redo, exact previews and preserved mask/focus/metadata. Generated editor is paused and left open. See docs/testing-v0.11.md.");

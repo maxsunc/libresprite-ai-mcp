@@ -4,6 +4,9 @@ An independent modified LibreSprite build, not an official LibreSprite release.
 No installer, administrator access, Homebrew, or native compiler is needed to run
 the editor. **Node.js 20+ is required for MCP.** See the package manifest for the
 minimum macOS version; it is the highest requirement of the bundled libraries.
+The manifest and `docs/live-bridge.md` identify the bundled version/tool catalog.
+For the v0.12.0 refresh, see `docs/testing-package-v0.12.md` for package-specific
+tests of inspection, correction and pixel-region workflows.
 
 1. Keep the extracted folder together in a writable location you control.
    Double-click **LibreSprite AI.app** for ordinary editing without agent access.

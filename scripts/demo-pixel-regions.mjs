@@ -1,20 +1,23 @@
 // Exact reads, component masks and atomic stamping over real MCP. GPL-2.0-only.
 // Uses only a NEW visible editor with generated art; leaves it paused/open.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Packaging review uses the REAL relocated launcher/production server.
+const packagedMcp = process.env.LIBRESPRITE_MCP_ROOT;
 const directory = path.join(root, ".runtime", `regions-${Date.now().toString(36)}`);
 const assets = path.join(directory, "assets");
 const socketPath = path.join(directory, "b.sock");
 await mkdir(assets, { recursive: true, mode: 0o700 });
 const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
 delete environment.SDL_VIDEODRIVER;
-const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "dist/index.js")],
+const transport = new StdioClientTransport({ command: packagedMcp ? "bash" : process.execPath,
+  args: [packagedMcp ? path.join(packagedMcp, "start-mcp.sh") : path.join(root, "dist/index.js")],
   env: { ...environment, LIBRESPRITE_SOCKET: socketPath, LIBRESPRITE_ASSET_ROOT: assets }, stderr: "pipe" });
 const client = new Client({ name: "libresprite-pixel-region-review", version: "0.12.0" });
 let documentId;
@@ -83,7 +86,7 @@ try {
   await edit("set_bitmap_selection", { x: 29, y: 1, width: 2, height: 2, bits: "1001" });
   await edit("set_active_site", { layerId: base, frame: 1 });
   await edit("save", { path: "regions-before.ase" });
-  const baseline = await request("inspect", { documentId });
+  let baseline = await request("inspect", { documentId });
   const rectangle = { x: 0, y: 0, width: 10, height: 10 };
   await request("set_paused", { paused: true });
   const raw = await request("read_pixels", { documentId, layerId: sourceLayer, frame: 0, ...rectangle }, "source-pixels");
@@ -100,6 +103,33 @@ try {
   const beforeSheet = await request("contact_sheet", sheet, "before-contact");
   assert.deepEqual(stable(await request("inspect", { documentId })), stable(baseline));
   await request("set_paused", { paused: false });
+  if (packagedMcp) {
+    // Exercise BOTH correction methods over the production MCP server, then
+    // restore generated artwork before the final stamp clears this redo branch.
+    const edits = [0, 1, 2].map((frame) => ({ layerId: destination, frame,
+      pixels: [{ x: 1, y: 1, ...color(235, 140, 75) }] }));
+    const predicted = await edit("edit_pixels", { edits, dryRun: true }, "package-pixel-dry-run");
+    assert.equal(predicted.changedPixels, 3); assert.equal(predicted.editedCels, 0);
+    assert.deepEqual(stable(await request("inspect", { documentId })), stable(baseline));
+    const applied = await edit("edit_pixels", { edits }, "package-pixel-applied");
+    assert.deepEqual(applied.changes, predicted.changes); preserved(baseline, applied);
+    const moves = [0, 1, 2].map((frame) => ({ layerId: destination, frame,
+      mask: { x: 1, y: 1, width: 1, height: 1, bits: "1" }, dx: 1, dy: 0 }));
+    const movePrediction = await edit("translate_regions", { edits: moves, dryRun: true }, "package-region-dry-run");
+    assert.equal(movePrediction.changedPixels, 6);
+    const moved = await edit("translate_regions", { edits: moves }, "package-region-applied");
+    assert.deepEqual(moved.changes, movePrediction.changes); preserved(baseline, moved);
+    assert.deepEqual((await request("render_layer", { documentId, layerId: destination, frame: 1 })).analysis.bounds,
+      { x: 2, y: 1, width: 1, height: 1 });
+    await edit("undo");
+    assert.deepEqual((await request("render_layer", { documentId, layerId: destination, frame: 1 })).analysis.bounds,
+      { x: 1, y: 1, width: 1, height: 1 });
+    await edit("undo");
+    assert.equal((await request("contact_sheet", sheet)).pngBase64, beforeSheet.pngBase64);
+    const restored = await request("inspect", { documentId });
+    assert.equal(restored.modified, false); preserved(baseline, restored);
+    baseline = restored; // Native Undo advances versions/revision, not artwork.
+  }
   const params = { source: { layerId: sourceLayer, frame: 0, ...rectangle }, mode: "nontransparent", maskBits: mask.mask.bits,
     label: "Review: reusable part across three frames", edits: [
       { layerId: destination, frame: 0, x: 3, y: 6 },
@@ -129,14 +159,39 @@ try {
   assert.equal((await request("render_selection", { documentId, frame: 1, mode: "mask" }, "gui-mask-after")).pngBase64, maskBefore.pngBase64);
   assert.equal((await request("render_layer", { documentId, layerId: sourceLayer, frame: 0, includeHidden: true })).pngBase64, sourcePng.pngBase64);
   await edit("save", { path: "regions-after.ase" });
+  if (packagedMcp) {
+    const beforeExports = await request("inspect", { documentId });
+    await edit("export_png", { path: "package-review.png", frame: 1, scale: 6 });
+    await edit("export_sprite_sheet", { path: "package-contact.png", frames: sheet.frames,
+      columns: sheet.columns, scale: sheet.scale, padding: sheet.padding });
+    assert.equal((await readFile(path.join(assets, "package-contact.png"))).toString("base64"), afterSheet.pngBase64);
+    await edit("export_animation", { path: "package-review.gif", format: "gif", tagId, scale: 4 });
+    await edit("export_animation", { path: "package-review.apng", format: "apng", tagId, scale: 4 });
+    assert.match((await readFile(path.join(assets, "package-review.gif"))).subarray(0, 6).toString(), /^GIF8[79]a$/);
+    const apng = await readFile(path.join(assets, "package-review.apng"));
+    assert.equal(apng.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    assert.ok(apng.includes(Buffer.from("acTL")));
+    assert.deepEqual(stable(await request("inspect", { documentId })), stable(beforeExports));
+  }
   await request("set_paused", { paused: true });
   const state = await request("inspect", { documentId }); preserved(baseline, state);
+  if (packagedMcp) {
+    const difference = await request("render_frame_diff", { documentId, layerId: destination,
+      fromFrame: 0, toFrame: 1, scale: 4 }, "package-frame-diff");
+    assert.ok(difference.difference.changedPixels > 0);
+    const analysis = await request("analyze_animation", { documentId, layerId: destination, tagId }, "package-analysis");
+    assert.deepEqual(analysis.steps.map((step) => step.frame), [0, 1, 2, 1]);
+    assert.equal(analysis.timing.totalDurationMs, 430);
+    assert.deepEqual(stable(await request("inspect", { documentId })), stable(state));
+  }
   assert.equal(state.layers.find((layer) => layer.layerId === sourceLayer).visible, false);
   assert.equal(state.layers.find((layer) => layer.layerId === sourceLayer).editable, false);
-  const review = { ...launched, socketPath, assetRoot: assets, documentId, revision: state.revision, base, sourceLayer, destination, tagId, sourceHash: preview.sourceHash, paused: true };
+  const review = { ...launched, ...(packagedMcp ? { packagedMcp: path.resolve(packagedMcp) } : {}),
+    socketPath, assetRoot: assets, documentId, revision: state.revision, base, sourceLayer, destination, tagId, sourceHash: preview.sourceHash, paused: true };
   await writeFile(path.join(directory, "review.json"), JSON.stringify(review, null, 2) + "\n");
   console.log(JSON.stringify(review, null, 2));
   console.log("PASS: all three pixel-region features over real MCP, PNG/live source equivalence, dry-run/apply/Undo/Redo/no-op and preserved source/mask/focus/metadata. Generated editor remains paused/open. See docs/testing-v0.12.md.");
+  if (packagedMcp) console.log("PASS: relocated production MCP/app, both atomic correction tools/Undo, paused frame differences/timing analysis and PNG/sheet/GIF/APNG exports. See docs/testing-package-v0.12.md.");
 } finally {
   await client.close();
 }

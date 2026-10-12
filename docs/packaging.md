@@ -1,13 +1,16 @@
 # Apple Silicon packaging and setup
 
-v0.9.0 packaging was **user-tested and approved on 2026-10-09**, but this is not a
-published, notarized app release. Native-CI/Linux work was skipped at the user's
-request. Existing macOS/Ubuntu MCP/helper CI is unchanged. Binary publication and
-Developer ID signing/notarization require separate authorization.
+The **v0.12.0 package refresh** bundles the current native editor and matching
+**67-tool MCP server**, including animation inspection/correction, exact pixel
+reads, mask extraction and atomic stamping. Rebuilding does not upgrade an old
+package or an already-running editor: use the new folder/app/server together.
+See [the v0.12 package checklist](testing-package-v0.12.md) for relocated tests.
 
-Examples below show the approved v0.9.0 package layout. The builder uses the
-current source version for new output names. v0.10.0 inspection features require
-a newly built editor/MCP pair; the existing local v0.9.0 package was not replaced.
+The earlier v0.9.0 package was **user-tested and approved on 2026-10-09** and
+remains unchanged. The new package is a separate local review build, not an
+installed, published or notarized release. Native-CI/Linux work was skipped at the
+user's request; existing macOS/Ubuntu MCP/helper CI is unchanged. Binary publication
+and Developer ID signing/notarization require separate authorization.
 
 ## Build a package
 
@@ -32,7 +35,7 @@ FreeType/LZ4 source (checksum-verified, cached under ignored `.cache/packaging-s
 Outputs under `build/packages/` (ignored/private until explicitly published):
 
 ```text
-libresprite-ai-mcp-0.9.0-macos-arm64/
+libresprite-ai-mcp-0.12.0-macos-arm64/
   LibreSprite AI.app/
     Contents/MacOS/libresprite
     Contents/Frameworks/         # complete non-system dynamic library closure
@@ -48,8 +51,8 @@ libresprite-ai-mcp-0.9.0-macos-arm64/
   START-HERE.md
   checksums.json
   verify-package.py
-libresprite-ai-mcp-0.9.0-macos-arm64.zip
-libresprite-ai-mcp-0.9.0-macos-arm64.zip.sha256
+libresprite-ai-mcp-0.12.0-macos-arm64.zip
+libresprite-ai-mcp-0.12.0-macos-arm64.zip.sha256
 ```
 
 Libraries are copied independently, rewritten to `@loader_path` references,
@@ -128,13 +131,13 @@ It must not be used while an agent is actively editing: only one connection is
 allowed, and closing the diagnostic connection **pauses the editor**. This is an
 explicit opt-in side effect, never part of default diagnostics. It doesn't resume
 or retry operations. `--doctor` is CLI functionality, not another MCP tool. The
-approved v0.9.0 package has 59 tools; see [the live guide](live-bridge.md) for the
-current source catalog.
+new v0.12.0 package has 67 tools; the retained v0.9.0 package has 59 tools. See
+[the live guide](live-bridge.md) for the current source catalog.
 
 ```sh
 python3 "/path/to/package/verify-package.py"
 codesign --verify --deep --strict "/path/to/package/LibreSprite AI.app"
-shasum -a 256 -c "/path/to/libresprite-ai-mcp-0.9.0-macos-arm64.zip.sha256"
+shasum -a 256 -c "/path/to/libresprite-ai-mcp-0.12.0-macos-arm64.zip.sha256"
 ```
 
 Run the ZIP checksum from the directory containing the ZIP. The file verifier

@@ -94,7 +94,11 @@ and configure the client to run `bash /path/to/package/mcp/start-mcp.sh`.
 The app has isolated preferences/recovery storage. Package minimum macOS is
 computed from all bundled libraries (the current local build requires **26.0+**).
 It is ad-hoc signed, **not Developer ID signed or notarized**.
-See [packaging/setup](docs/packaging.md) and [the review checklist](docs/testing-v0.9.md).
+The separate **v0.12.0 package** includes the matching **67-tool** MCP server and
+current inspection, correction and pixel-region features. The earlier approved
+v0.9.0 package is retained unchanged; existing windows are not upgraded in place.
+See [packaging/setup](docs/packaging.md) and
+[the v0.12 package checklist](docs/testing-package-v0.12.md).
 
 ## Editing features and tests
 

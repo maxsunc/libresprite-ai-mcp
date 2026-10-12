@@ -1,5 +1,9 @@
 # Packaging / v0.9.0 review
 
+This is the historical v0.9.0 checklist. For the separate v0.12.0 rebuild, use
+[the current package checklist](testing-package-v0.12.md). Neither package
+automatically replaces the other or upgrades already-running editors.
+
 Steps 1–3 and the packaging milestone were user-approved. Packaging was tested
 and approved on **2026-10-09**; this checklist remains available for regression
 review. This milestone packages Apple Silicon macOS only. **Native-CI/Linux work

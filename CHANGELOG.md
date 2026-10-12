@@ -1,5 +1,17 @@
 # Development milestones
 
+## 0.12.0 — Apple Silicon package refresh (2026-10-12)
+
+- Rebuild the editor and production MCP server as a separate v0.12.0 package with
+  67 tools, preserving the approved v0.9.0 folder/ZIP and existing editors/artwork.
+- Relocated production-launcher reviews exercise inspection, both correction
+  tools, exact reads, component masks, stamping, native Undo/Redo and exports.
+  Package review instructions cover linkage/signatures, source/privacy/integrity
+  checks and running the full disposable GUI suite against the bundled executable.
+- Local package only: no installation/client migration, binary-release upload,
+  Developer ID signing/notarization or new native-CI/platform milestone. Apple
+  Silicon macOS 26.0+ and external Node.js 20+ requirements remain unchanged.
+
 ## 0.12.0 — Exact pixel regions (2026-10-11)
 
 - Read-only exact native RGBA/indexed/grayscale-alpha cel values, bounded signed
