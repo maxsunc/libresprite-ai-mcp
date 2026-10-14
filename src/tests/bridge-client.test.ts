@@ -61,13 +61,13 @@ test("serializes requests, injects handshake session, and handles fragmented res
 test("native errors retain their code and do not break the queue", async () => {
   const fixture = await mock((request, socket) => {
     if (request.method === "status") reply(socket, request, { protocolVersion: 1, sessionId: "s" });
-    else if (request.method === "edit") socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Changed", data: { code: "STALE_REVISION" } } }) + "\n");
+    else if (request.method === "edit") socket.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { message: "Changed", data: { code: "STALE_REVISION", notStarted: true } } }) + "\n");
     else reply(socket, request, { ok: true });
   });
   const client = new BridgeClient(fixture.endpoint);
   try {
     await client.request("status");
-    await assert.rejects(client.request("edit"), (error) => error instanceof BridgeError && error.code === "STALE_REVISION");
+    await assert.rejects(client.request("edit"), (error) => error instanceof BridgeError && error.code === "STALE_REVISION" && error.data.notStarted === true);
     assert.equal((await client.request("inspect")).ok, true);
   } finally { client.close(); await fixture.close(); }
 });
@@ -138,5 +138,31 @@ test("reported capabilities refuse unsupported methods before sending an edit", 
     assert.deepEqual(methods, ["status"]);
     await client.request("inspect");
     assert.deepEqual(methods, ["status", "inspect"]);
+  } finally { client.close(); await fixture.close(); }
+});
+
+test("cancellation removes unsent queued work but still collects a sent request's outcome", async () => {
+  const calls: string[] = [];
+  let release!: () => void;
+  let received!: () => void;
+  const sent = new Promise<void>(resolve => { received = resolve; });
+  const fixture = await mock((request, socket) => {
+    calls.push(request.method);
+    if (request.method === "status") reply(socket, request, { protocolVersion: 1, sessionId: "s" });
+    else { release = () => reply(socket, request, { applied: true }); received(); }
+  });
+  const client = new BridgeClient(fixture.endpoint);
+  const inflight = new AbortController(), queued = new AbortController();
+  try {
+    await client.request("status");
+    const first = client.request("apply_edit", {}, inflight.signal);
+    await sent;
+    const second = client.request("set_pixels", {}, queued.signal);
+    const outcomes = Promise.allSettled([first, second]);
+    inflight.abort(); queued.abort(); release();
+    const [a, b] = await outcomes;
+    assert.equal(a?.status, "fulfilled");
+    assert.ok(b?.status === "rejected" && b.reason instanceof BridgeError && b.reason.code === "ABORTED");
+    assert.deepEqual(calls, ["status", "apply_edit"]);
   } finally { client.close(); await fixture.close(); }
 });

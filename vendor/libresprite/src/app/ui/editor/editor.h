@@ -98,6 +98,10 @@ namespace app {
 
     // Returns the current state.
     EditorStatePtr getState() { return m_state; }
+    // Exact Standby, not its Drawing/MovingPixels/MovingCel subclasses.
+    bool isIdleForAutomation() const;
+    // Added 2026-10-14: a pan over Standby, never a suspended edit/transform.
+    bool isViewOnlyPanning() const;
 
     bool isMovingPixels() const;
     void dropMovingPixels();

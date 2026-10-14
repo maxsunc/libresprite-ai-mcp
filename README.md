@@ -4,7 +4,7 @@ A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/Lib
 editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
 application**, with native undo and rendered PNG feedback.
 
-**Source alpha — v0.12.0.** This is an independent development project, not an
+**Source alpha — v0.13.0.** This is an independent development project, not an
 official LibreSprite release. A stock LibreSprite installation does not contain
 this bridge. A relocatable Apple Silicon review-package builder is now provided;
 downloadable signed/notarized releases are not published yet.
@@ -76,6 +76,12 @@ to see previews.
 
 ## Apple Silicon review package
 
+**Branch review:** v0.13.0 cooperative editing is experimental and awaiting manual
+testing in its draft PR. Readiness/waiting, safe view-only panning and guarded
+prepare/apply corrections let manual edits coexist without blindly overwriting
+them. See [cooperative editing](docs/cooperative-editing.md) and
+[the v0.13 checklist](docs/testing-v0.13.md). Approved v0.9/v0.12 packages are not rebuilt.
+
 After installing the [build prerequisites](docs/building.md) and `npm ci`, run:
 
 ```sh
@@ -118,7 +124,7 @@ indexed-color painting are now included.
 Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
 exports are also available, along with undoable palette/tag editing and animated
 GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **67 tools**, and limitations.
+[live bridge guide](docs/live-bridge.md) for setup, all **70 tools**, and limitations.
 
 Read-only frame differences highlight added/removed/modified rendered pixels
 and report exact counts, bounds, and occupancy centroids. Isolated layer/group
@@ -172,14 +178,17 @@ tools never automatically close or kill a window that might hold unsaved work.
 ## Editing safeguards and limits
 
 - Agent editing starts paused and pauses on disconnect; explicitly resume before
-  mutations and pause before manual work. A local user pause persists through
+  mutations. Use Pause for exclusive manual control; ordinary gestures use
+  [cooperative waiting/conflicts](docs/cooperative-editing.md). A local pause persists through
   reconnect and must be released using the editor's Resume button.
-- Writes require the active document and its current revision. After a timeout
+- Direct writes require the active document and its current revision; prepared
+  corrections additionally use immutable dependency tokens for safe disjoint rebasing. After a timeout
   or uncertain result, reconnect and inspect rather than blindly retrying.
 - Native edits are undoable. Saves/exports publish atomically with overwrite
   refused unless explicitly requested.
-- All document edits require idle target views (finish drawing, transformations,
-  or playback first). Crops refuse pixel/mask loss unless explicitly authorized.
+- All document edits wait/refuse unfinished target-view drawing, transforms or
+  playback. Only proven viewport pans may coexist with reads/corrections.
+  Crops refuse pixel/mask loss unless explicitly authorized.
 - File access stays inside the configured asset root. The bridge is a local
   private Unix socket, not a public network service.
 - Current bounds include 1024×1024 canvases, 256 frames, and 128 layers. Some

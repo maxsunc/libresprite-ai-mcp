@@ -4,7 +4,7 @@ import { createConnection, type Socket } from "node:net";
 export type BridgeResult = Record<string, unknown>;
 
 export class BridgeError extends Error {
-  constructor(public readonly code: string, message: string) {
+  constructor(public readonly code: string, message: string, public readonly data: BridgeResult = {}) {
     super(message);
     this.name = "BridgeError";
   }
@@ -28,8 +28,10 @@ export class BridgeClient {
 
   constructor(readonly socketPath: string, private readonly timeoutMs = 10_000) {}
 
-  request(method: string, params: BridgeResult = {}): Promise<BridgeResult> {
-    const next = this.queue.then(() => this.send(method, params));
+  supports(method: string): boolean { return this.supportedMethods?.has(method) ?? false; }
+
+  request(method: string, params: BridgeResult = {}, signal?: AbortSignal): Promise<BridgeResult> {
+    const next = this.queue.then(() => this.send(method, params, signal));
     this.queue = next.catch(() => undefined);
     return next;
   }
@@ -98,7 +100,7 @@ export class BridgeClient {
             jsonrpc?: string;
             id?: unknown;
             result?: BridgeResult;
-            error?: { message?: string; data?: { code?: string } };
+            error?: { message?: string; data?: { code?: string; [key: string]: unknown } };
           };
           const pending = this.pending;
           if (!pending || response.jsonrpc !== "2.0" || response.id !== pending.id || this.input.length) {
@@ -107,7 +109,7 @@ export class BridgeClient {
           clearTimeout(pending.timer);
           this.pending = undefined;
           if (response.error) {
-            pending.reject(new BridgeError(response.error.data?.code ?? "BRIDGE_ERROR", response.error.message ?? "Native bridge failed."));
+            pending.reject(new BridgeError(response.error.data?.code ?? "BRIDGE_ERROR", response.error.message ?? "Native bridge failed.", response.error.data ?? {}));
           } else if (response.result && typeof response.result === "object" && !Array.isArray(response.result)) {
             pending.resolve(response.result);
           } else {
@@ -121,8 +123,10 @@ export class BridgeClient {
     });
   }
 
-  private async send(method: string, params: BridgeResult): Promise<BridgeResult> {
+  private async send(method: string, params: BridgeResult, signal?: AbortSignal): Promise<BridgeResult> {
+    if (signal?.aborted) throw new BridgeError("ABORTED", "Request cancelled before sending; no edit was applied.", { notStarted: true });
     await this.connect();
+    if (signal?.aborted) throw new BridgeError("ABORTED", "Request cancelled before sending; no edit was applied.", { notStarted: true });
     if (this.closed || !this.socket || this.socket.destroyed) {
       throw new BridgeError("DISCONNECTED", "Bridge connection closed before the request was sent.");
     }

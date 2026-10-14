@@ -113,6 +113,9 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_close_document` | Confirmed saved/unmodified active-document close |
 | `libresprite_copy_cel` | Independent whole-cel copy within one sprite |
 | `libresprite_read_pixels` | Exact bounded raw RGBA/grayscale/indexed cel rows/runs |
+| `libresprite_interaction_state` | Lightweight readiness during gestures/dialogs/pause |
+| `libresprite_prepare_edit` | Read-only correction validation and dependency token |
+| `libresprite_apply_edit` | Single-use guarded correction across disjoint manual edits |
 | `libresprite_extract_mask` | Read-only alpha/value masks and seeded connected components |
 | `libresprite_stamp_region` | Atomic same-sprite/PNG partial-region stamping with dry run |
 | `libresprite_duplicate_frames` | Ordered copies of explicit pre-edit frame indices |
@@ -171,7 +174,7 @@ Example pixel-batch arguments (replace the IDs/revision with current results):
 | `libresprite_undo` / `libresprite_redo` | One native undo transaction |
 | `libresprite_save` | Atomic native-file save inside the root |
 
-There are **67 tools** in server/bridge version **0.12.0**. Rebuild the editor
+There are **70 tools** in server/bridge version **0.13.0**. Rebuild the editor
 and start a **new development window** when upgrading: already-running windows
 keep their old native bridge. `libresprite_connect` reports `bridgeVersion`
 and supported native `methods` in new builds. Older bridge builds may not
@@ -943,7 +946,12 @@ supported—save `.ase` to retain the editable sprite.
 
 ## Manual editing, disconnects, and safety
 
-- **Pause before editing manually.** Native pause blocks agent operations; it
+- **Cooperative editing is under branch review.** See [the cooperative guide](cooperative-editing.md).
+  Proven view-only pan can coexist with reads/corrections; actual manual gestures
+  make MCP calls wait briefly, then return recoverable deferred/conflict results.
+  Prepared corrections can rebase only when all dependencies remain unchanged.
+  Strict native/direct operations still enforce revisions; no blind retries.
+- **Pause for exclusive manual control.** Native pause blocks agent operations; it
   does not disable your mouse/keyboard or lock the document against you. There
   is a dedicated AI Pause/Resume control in bridge-enabled editor status bars;
   local pauses cannot be remotely overridden. Disconnect also pauses operations.
@@ -952,18 +960,23 @@ supported—save `.ase` to retain the editable sprite.
   for an edit. Create/open visibly select the new document.
   `activate_document` is the explicit, guarded exception for switching tabs;
   focus and closing still require the active document.
-- An edit, save, export, undo, or redo requires the latest revision. Revisions are
+- Direct edits, saves, exports, undo and redo require the latest revision. Prepared
+  corrections instead validate immutable operation-dependency tokens; see the
+  cooperative guide for guarded rebasing and limits. Revisions are
   derived from metadata, native history, actual image bytes, and selection bitmap
   bits/visibility. A manual edit
   observed before a request causes `STALE_REVISION`. IDs/revisions are scoped
   to a session, not persistent file identifiers.
-- Drawing gestures, playback, transforms, captured mouse input, and modal
-  dialogs cause `BUSY`. Finish the interaction, inspect, then continue.
+- Drawing gestures, playback, transforms, unrelated captured mouse input, and modal
+  dialogs still block writes. MCP waits up to 2 seconds ONLY for a native BUSY
+  response proving execution never began, then returns `deferred/applied:false`.
+  Releasing a gesture does not leave a hidden queued edit. A verified pan over
+  Standby is allowed for reads and corrections, not view-disrupting operations.
 - **Disconnect pauses the native bridge.** Reconnect, inspect, and explicitly
   resume; do not assume a reconnected server is permitted to edit.
 - On a timeout/disconnect during an operation, the outcome is **unknown**:
   the native transaction may already have completed. The server never retries
-  edits automatically. Reconnect and inspect rather than blindly repeating.
+  uncertain outcomes. Reconnect and inspect rather than blindly repeating.
 - Successful JSON-RPC requests can be replayed with the **same ID and exact
   contents** while retained in the native deduplication cache (128 entries,
   bounded to 16 MiB). This is not durable or unlimited exactly-once delivery;
@@ -975,8 +988,10 @@ supported—save `.ase` to retain the editable sprite.
   unique sibling file before publication. No-overwrite saves use atomic hard
   linking; overwrite saves use atomic rename. The root policy is not a
   hardened sandbox against hostile processes running as the same OS user.
-- This development build still uses ordinary LibreSprite preferences/recovery
-  locations. It is not a completely isolated editor profile.
+- Unbundled development builds default to ordinary LibreSprite preferences/recovery
+  locations. Explicitly set `LIBRESPRITE_USER_DIR` to a separate profile for branch
+  review; disposable tests do this automatically for their own child editors.
+  The approved packaged app retains its separate bundle/profile defaults.
 
 ## Current limits
 

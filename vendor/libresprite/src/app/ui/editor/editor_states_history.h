@@ -22,6 +22,9 @@ namespace app {
 
     // Gets the current state.
     EditorStatePtr top();
+    // Added 2026-10-14 by LibreSprite AI MCP: classify view-only pan safely.
+    size_t size() const { return m_states.size(); }
+    EditorStatePtr previous() const { return m_states.size() > 1 ? m_states[m_states.size()-2] : nullptr; }
 
     // Adds a new state in the history.
     void push(const EditorStatePtr& state);

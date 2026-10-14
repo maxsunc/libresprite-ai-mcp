@@ -1,5 +1,26 @@
 # Native changes from the pinned LibreSprite source
 
+## 2026-10-14 — v0.13.0 cooperative editing (unreleased draft branch)
+
+`src/app/automation/bridge.cpp` adds lightweight readiness, conservative immutable
+correction-dependency tokens and single-use apply under the existing native writer
+lock/Undo transactions. Ordinary UI conflicts carry explicit pre-execution data;
+only lock-constructor failures (not exceptions during operations) get the same
+no-start guarantee. Local Pause/disconnect/session and resource limits remain.
+
+`src/app/ui/editor/editor.cpp`/`.h` add read-only exact-Standby and view-only-pan
+classification. `editor_states_history.h` exposes only stack size/previous state
+for this check. Drawing, MovingPixels and other Standby-derived states are **not**
+idle. A scrolling state over a suspended transform is not view-only. No ordinary
+gesture/Undo mechanics are replaced or input synthesized by a bridge tool.
+
+`src/app/resource_finder.cpp` adds opt-in `LIBRESPRITE_USER_DIR` environment profile
+isolation for disposable tests/manual branch review. Unset defaults are unchanged,
+with no automatic preference migration. These upstream app modifications retain
+their GPLv2 notices; this milestone modifies no MIT renderer/document-library files.
+See [the cooperative guide](cooperative-editing.md) and
+[manual checklist](testing-v0.13.md). Approved app packages are not rebuilt.
+
 ## 2026-10-11 — v0.12.0 exact pixel reads
 
 `src/app/automation/bridge.cpp` reads explicit image-layer cels under the existing
