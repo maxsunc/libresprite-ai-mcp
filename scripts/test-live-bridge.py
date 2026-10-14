@@ -21,6 +21,7 @@ from bridge_editing_cases import test_editing_workflows
 from bridge_inspection_cases import test_frame_differences, test_isolated_previews, test_animation_diagnostics
 from bridge_correction_cases import test_animation_correction
 from bridge_pixel_region_cases import test_pixel_reads, test_pixel_masks, test_region_stamps
+from bridge_cooperative_cases import test_cooperative_edits
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("smoke", ROOT / "scripts/smoke-test-libresprite.py")
@@ -46,9 +47,19 @@ class Client:
         if method != "status":
             params.setdefault("sessionId", self.session)
         request = {"jsonrpc": "2.0", "id": request_id or str(uuid.uuid4()), "method": method, "params": params}
-        self.socket.sendall((json.dumps(request) + "\n").encode())
-        response = json.loads(self.reader.readline())
-        assert response["id"] == request["id"], response
+        deadline = time.monotonic() + 2
+        while True:
+            self.socket.sendall((json.dumps(request) + "\n").encode())
+            response = json.loads(self.reader.readline())
+            assert response["id"] == request["id"], response
+            error = response.get("error", {}).get("data", {})
+            # Real native guards only: recovery can temporarily hold a reader.
+            # Never retry unproven BUSY, errors under test, stale revisions, or
+            # uncertain transport outcomes; resend identical params/revision.
+            if expected_error is None and error.get("code") == "BUSY" and error.get("notStarted") is True and time.monotonic() < deadline:
+                time.sleep(.1)
+                continue
+            break
         if expected_error:
             assert response["error"]["data"]["code"] == expected_error, response
             return response
@@ -68,6 +79,7 @@ def main():
     parser.add_argument("--pixels-only", action="store_true", help="Run exact pixel-region checks in a fresh GUI.")
     parser.add_argument("--masks-only", action="store_true", help="Run read-only extracted-mask checks in a fresh GUI.")
     parser.add_argument("--stamps-only", action="store_true", help="Run atomic region/PNG stamping checks in a fresh GUI.")
+    parser.add_argument("--cooperative-only", action="store_true", help="Run prepared corrections/readiness and process-targeted real gestures in a fresh GUI.")
     options = parser.parse_args()
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
@@ -80,6 +92,10 @@ def main():
         with log_path.open("w") as log:
             environment = os.environ.copy()
             environment.pop("SDL_VIDEODRIVER", None)
+            environment["LIBRESPRITE_USER_DIR"] = str(directory / "profile")
+            (directory / "profile").mkdir()
+            # No floating preview overlay on the generated gesture-test canvas.
+            (directory / "profile/libresprite.ini").write_text("[MiniEditor]\nEnabled = false\n")
             process = subprocess.Popen([str(SMOKE.EXECUTABLE), "--automation-socket", str(endpoint), "--automation-root", str(assets)], stdout=log, stderr=log, env=environment)
             client = None
             try:
@@ -92,7 +108,7 @@ def main():
                 client = Client(endpoint)
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
-                assert status["bridgeVersion"] == "0.12.0" and "read_pixels" in status["methods"]
+                assert status["bridgeVersion"] == "0.13.0" and "prepare_edit" in status["methods"]
                 assert status["connected"] and not status["pausedByUser"] and status["controlText"] == "AI: Paused | Resume"
                 client.request("no_such_method", expected_error="METHOD_NOT_FOUND")
                 client.socket.sendall(b"not-json\n")
@@ -101,6 +117,9 @@ def main():
                 assert client.request("list_documents")["documents"] == []
                 client.request("create", {"width": 16, "height": 16, "name": "Test"}, expected_error="PAUSED")
                 client.request("set_paused", {"paused": False})
+                if options.cooperative_only:
+                    test_cooperative_edits(client, assets, SMOKE)
+                    return
                 if options.pixels_only:
                     test_pixel_reads(client, assets, SMOKE)
                     test_pixel_masks(client, assets, SMOKE)
@@ -132,6 +151,7 @@ def main():
                     assert client.request("status")["pid"] == process.pid
                     print("PASS: closing the last saved sprite leaves an empty, connected editor rather than quitting.")
                     return
+                test_cooperative_edits(client, assets, SMOKE)
                 test_pixel_reads(client, assets, SMOKE)
                 test_pixel_masks(client, assets, SMOKE)
                 test_region_stamps(client, assets, SMOKE)

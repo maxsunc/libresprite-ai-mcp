@@ -10,6 +10,7 @@
 // Updated 2026-10-11: bounded exact native cel pixel reads, including off-canvas samples.
 // Updated 2026-10-11: read-only raw-value/alpha masks and seeded connected components.
 // Updated 2026-10-11: guarded atomic raw-region/PNG stamping with source snapshots.
+// Updated 2026-10-14: cooperative readiness, proven view-only panning and guarded edit tickets.
 #include "app/automation/bridge.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -87,6 +88,7 @@
 #include "ui/button.h"
 #include "ui/tooltips.h"
 #include "ui/timer.h"
+#include "ui/view.h"
 #include "../../../../nlohmann/json.hpp"
 
 #include <algorithm>
@@ -121,8 +123,9 @@ constexpr size_t MaxAnimationPixels = 8 * 1024 * 1024;
 
 struct BridgeError : std::runtime_error {
   std::string code;
-  BridgeError(const std::string& code, const std::string& message)
-    : std::runtime_error(message), code(code) {}
+  Json data;
+  BridgeError(const std::string& code, const std::string& message, Json data = Json::object())
+    : std::runtime_error(message), code(code), data(std::move(data)) {}
 };
 void require(bool condition, const std::string& code, const std::string& message) {
   if (!condition) throw BridgeError(code, message);
@@ -218,12 +221,17 @@ bool sameUser(int fd) {
   return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) == 0 && peer.uid == getuid();
 #endif
 }
-void uiIdle() {
+void uiIdle(bool allowPanning = false) {
   auto manager = ui::Manager::getDefault();
   auto foreground = manager->getForegroundWindow();
-  require(!manager->getCapture() && (!foreground || foreground == App::instance()->mainWindow()), "BUSY", "Finish the current GUI gesture or modal dialog first.");
+  auto capture = dynamic_cast<Editor*>(manager->getCapture());
+  if ((manager->getCapture() && !(allowPanning && capture && capture->isViewOnlyPanning())) ||
+      (foreground && foreground != App::instance()->mainWindow()))
+    throw BridgeError("BUSY", "Waiting for the current GUI gesture or dialog to finish.", {{"notStarted", true}});
   auto editor = UIContext::instance()->activeEditor();
-  require(!editor || (!editor->isPlaying() && dynamic_cast<StandbyState*>(editor->getState().get())), "BUSY", "Finish drawing, playback, or transforming before accessing the bridge.");
+  if (editor && (editor->isPlaying() || !(editor->isIdleForAutomation() ||
+      (allowPanning && editor->isViewOnlyPanning()))))
+    throw BridgeError("BUSY", "Waiting for drawing, playback, or transforming to finish.", {{"notStarted", true}});
 }
 Json summary(Document* document) {
   auto sprite = document->sprite();
@@ -300,6 +308,9 @@ private:
   Clock::time_point m_progress = Clock::now();
   std::deque<Cached> m_cache;
   std::map<ObjectId, Revision> m_revisions;
+  struct PreparedEdit { std::string token; ObjectId documentId; int revision; Json operation, guard;
+    Clock::time_point created; bool used = false; size_t bytes; };
+  std::deque<PreparedEdit> m_prepared;
 
   void updateControl() {
     if (!m_control) return;
@@ -337,6 +348,7 @@ private:
     if (m_client >= 0) close(m_client);
     m_client = -1;
     m_input.clear(); m_output.clear(); m_sent = 0;
+    m_prepared.clear(); // No delayed edit capability survives disconnect.
     // Disconnect is a safety boundary: edits require explicit resume.
     m_paused = true;
     updateControl();
@@ -493,12 +505,14 @@ private:
   }
   void checkRevision(Document* document, const Json& params) {
     int expected = integer(params, "expectedRevision", 1, INT32_MAX);
-    require(inspect(document)["revision"] == expected, "STALE_REVISION", "Document changed. Inspect it again before editing.");
+    if (inspect(document)["revision"] != expected)
+      throw BridgeError("STALE_REVISION", "Document changed. Inspect and reconsider this edit; do not just substitute a newer revision.", {{"notStarted", true}});
   }
-  void documentViewsIdle(Document* document) {
+  void documentViewsIdle(Document* document, bool allowPanning = false) {
     for (auto view : UIContext::instance()->getAllDocumentViews(document)) {
       auto editor = view->editor();
-      require(!editor->isPlaying() && dynamic_cast<StandbyState*>(editor->getState().get()), "BUSY", "Finish playback/drawing/transforming in every view of the target document first.");
+      if (editor->isPlaying() || !(editor->isIdleForAutomation() || (allowPanning && editor->isViewOnlyPanning())))
+        throw BridgeError("BUSY", "Waiting for playback/drawing/transforming in every target view.", {{"notStarted", true}});
     }
   }
   Json activateDocument(Document* document, const Json& params) {
@@ -506,12 +520,15 @@ private:
     require(params.contains("expectedActiveDocumentId"), "INVALID_PARAMS", "Supply expectedActiveDocumentId (null when no sprite is active).");
     auto active = ctx->activeDocument();
     const auto& expected = params["expectedActiveDocumentId"];
-    if (expected.is_null()) require(!active, "ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.");
+    if (expected.is_null()) {
+      if (active) throw BridgeError("ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.", {{"notStarted", true}});
+    }
     else {
       int id = integer(params, "expectedActiveDocumentId", 1, INT32_MAX);
-      require(active && active->id() == ObjectId(id), "ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.");
+      if (!active || active->id() != ObjectId(id))
+        throw BridgeError("ACTIVE_DOCUMENT_CHANGED", "The active document changed. List documents again before switching.", {{"notStarted", true}});
     }
-    DocumentReader reader(document, 0);
+    auto reader = readLock(document);
     checkRevision(document, params);
     documentViewsIdle(document);
     auto view = ctx->getFirstDocumentView(document);
@@ -521,7 +538,8 @@ private:
     return inspect(document);
   }
   Json focusSite(Document* document, const Json& params) {
-    DocumentReader reader(document, 0);
+    auto reader = readLock(document);
+    documentViewsIdle(document);
     checkRevision(document, params);
     require(params.contains("layerId") || params.contains("frame"), "INVALID_PARAMS", "Supply layerId and/or frame.");
     auto editor = UIContext::instance()->activeEditor();
@@ -2084,6 +2102,160 @@ private:
     result["source"] = sourceInfo; result["sourceHash"] = sourceHash; result["mode"] = mode;
     return result;
   }
+  static bool correctionMethod(const std::string& method) {
+    return method == "edit_pixels" || method == "translate_regions" || method == "stamp_region";
+  }
+  std::unique_ptr<DocumentReader> readLock(Document* document) {
+    // This constructor is BEFORE any operation work; unlike a catch around
+    // dispatch/transactions, an acquisition failure proves execution not started.
+    try { return std::unique_ptr<DocumentReader>(new DocumentReader(document, 0)); }
+    catch (const LockedDocumentException& error) { throw BridgeError("BUSY", error.what(), {{"notStarted", true}}); }
+  }
+  std::unique_ptr<ContextWriter> writeLock(UIContext* context) {
+    try { return std::unique_ptr<ContextWriter>(new ContextWriter(context, 0)); }
+    catch (const LockedDocumentException& error) { throw BridgeError("BUSY", error.what(), {{"notStarted", true}}); }
+  }
+  static bool readMethod(const std::string& method) {
+    return method == "list_documents" || method == "list_assets" || method == "preview_asset" ||
+      method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" ||
+      method == "render_selection" || method == "render_frame_diff" || method == "render_layer" ||
+      method == "analyze_animation" || method == "read_pixels" || method == "extract_mask" || method == "prepare_edit";
+  }
+  Json correction(Document* document, const std::string& method, const Json& params) {
+    if (method == "edit_pixels") return editPixels(document, params);
+    if (method == "translate_regions") return translateRegions(document, params);
+    return stampRegion(document, params);
+  }
+  // No document contents are inspected while an unfinished native gesture owns
+  // them. This lightweight state query remains available then, and while paused.
+  Json interactionState(const Json& params) {
+    bool pan = params.contains("allowPanning") ? boolean(params, "allowPanning") : true;
+    auto ctx = UIContext::instance(); bool ready = true; std::string reason;
+    try {
+      uiIdle(pan);
+      if (params.contains("documentId")) documentViewsIdle(findDocument(params), pan);
+    } catch (const BridgeError& error) { ready = false; reason = error.code; }
+    auto editor = ctx->activeEditor();
+    Json view = nullptr;
+    if (editor) {
+      auto scroll = ui::View::getView(editor)->viewScroll(); auto origin = editor->editorToScreen(gfx::Point(0, 0));
+      auto one = editor->editorToScreen(gfx::Point(1, 1)); auto bounds = editor->bounds(); auto window = App::instance()->mainWindow()->bounds();
+      view = {{"scrollX", scroll.x}, {"scrollY", scroll.y}, {"zoom", editor->zoom().scale()},
+        {"canvasOrigin", {{"x", origin.x}, {"y", origin.y}}}, {"pixelStep", {{"x", one.x-origin.x}, {"y", one.y-origin.y}}},
+        {"editorBounds", {{"x", bounds.x}, {"y", bounds.y}, {"width", bounds.w}, {"height", bounds.h}}},
+        {"windowBounds", {{"x", window.x}, {"y", window.y}, {"width", window.w}, {"height", window.h}}}};
+    }
+    auto control = m_control->bounds();
+    return {{"schema", "libresprite-interaction-v1"}, {"ready", ready}, {"reason", reason.empty() ? Json(nullptr) : Json(reason)}, {"view", view},
+      {"controlBounds", {{"x", control.x}, {"y", control.y}, {"width", control.w}, {"height", control.h}}},
+      {"viewOnlyPanning", editor && editor->isViewOnlyPanning()}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser},
+      {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"sessionId", m_session}};
+  }
+  Json editGuard(Document* document, const Json& operation, const Json& preview, const Json* baseline = nullptr) {
+    auto sprite = document->sprite(); auto metadata = details(document);
+    Json layers = metadata["layers"];
+    for (auto& layer : layers) { layer.erase("version"); layer.erase("cels"); }
+    Json guard = {{"width", sprite->width()}, {"height", sprite->height()}, {"format", int(sprite->pixelFormat())},
+      {"transparentIndex", sprite->transparentColor()}, {"spriteVersion", sprite->version()}, {"layers", layers},
+      {"frames", metadata["frames"]}, {"palettes", metadata["palettes"]}, {"tags", metadata["tags"]}, {"cels", Json::array()}};
+    // Existing cel identities pin frame mappings (including equal-looking poses).
+    // New cels are allowed: a manual disjoint stroke can create a previously absent
+    // destination. Existing cel deletion/recreation or frame permutation conflicts.
+    if (baseline) {
+      for (const auto& entry : (*baseline)["cels"]) {
+        auto layer = findLayer(sprite, entry["layerId"].get<int>());
+        auto cel = layer->cel(entry["frame"].get<int>());
+        guard["cels"].push_back({{"layerId", layer->id()}, {"frame", entry["frame"]}, {"celId", cel ? Json(cel->id()) : Json(nullptr)}});
+      }
+    } else for (auto layer : sprite->layers()) if (layer->isImage())
+      for (auto it = static_cast<LayerImage*>(layer)->getCelBegin(); it != static_cast<LayerImage*>(layer)->getCelEnd(); ++it)
+        guard["cels"].push_back({{"layerId", layer->id()}, {"frame", (*it)->frame()}, {"celId", (*it)->id()}});
+    SHA1Context hash; SHA1Reset(&hash); size_t samples = 0;
+    auto sample = [&](Layer* layer, int frame, int x, int y) {
+      require(++samples <= MaxPixels, "LIMIT_EXCEEDED", "Prepared-edit guard exceeds 1,048,576 dependency samples.");
+      uint32_t value = correctionSample(sprite, layer, frame, x, y);
+      uint8_t bytes[] = {uint8_t(value), uint8_t(value >> 8), uint8_t(value >> 16), uint8_t(value >> 24)};
+      SHA1Input(&hash, bytes, 4);
+    };
+    auto method = operation["method"].get<std::string>(); guard["targetProperties"] = Json::array();
+    for (const auto& entry : operation["edits"]) {
+      auto layer = findLayer(sprite, entry["layerId"].get<int>()); int frame = entry["frame"].get<int>(); auto cel = layer->cel(frame);
+      guard["targetProperties"].push_back({{"layerId", layer->id()}, {"frame", frame}, {"opacity", cel ? cel->opacity() : 255},
+        {"userData", cel ? Json{{"text", cel->data()->userData().text()}, {"color", cel->data()->userData().color()}} : Json{{"text", ""}, {"color", 0}}}});
+      if (method == "edit_pixels") {
+        for (const auto& pixel : entry["pixels"]) sample(layer, frame, pixel["x"].get<int>(), pixel["y"].get<int>());
+      } else {
+        gfx::Rect area;
+        if (method == "translate_regions") {
+          const auto& mask = entry["mask"];
+          area = gfx::Rect(mask["x"].get<int>(), mask["y"].get<int>(), mask["width"].get<int>(), mask["height"].get<int>());
+          auto destination = area; destination.offset(entry["dx"].get<int>(), entry["dy"].get<int>()); area |= destination;
+        } else area = gfx::Rect(entry["x"].get<int>(), entry["y"].get<int>(), operation["source"]["width"].get<int>(), operation["source"]["height"].get<int>());
+        require(size_t(area.w) * area.h <= MaxPixels - samples, "LIMIT_EXCEEDED", "Prepared-edit dependency footprints exceed the aggregate sample budget.");
+        for (int y = area.y; y < area.y2(); ++y) for (int x = area.x; x < area.x2(); ++x) sample(layer, frame, x, y);
+      }
+    }
+    uint8_t digest[20]; SHA1Result(&hash, digest); std::ostringstream encoded;
+    for (auto byte : digest) encoded << std::hex << std::setw(2) << std::setfill('0') << int(byte);
+    guard["pixels"] = encoded.str();
+    if (method == "stamp_region") guard["sourceHash"] = preview["sourceHash"];
+    return guard;
+  }
+  Json prepareEdit(Document* document, const Json& params) {
+    checkRevision(document, params); documentViewsIdle(document, true);
+    require(params.contains("operation") && params["operation"].is_object(), "INVALID_PARAMS", "Supply a bounded correction operation.");
+    auto operation = params["operation"]; auto method = text(operation, "method", 64);
+    require(correctionMethod(method), "INVALID_PARAMS", "Prepared edits support edit_pixels, translate_regions or stamp_region only.");
+    operation["dryRun"] = true;
+    auto preview = correction(document, method, operation);
+    auto guard = editGuard(document, operation, preview);
+    size_t bytes = operation.dump().size() + guard.dump().size();
+    require(bytes <= 2 * 1024 * 1024, "LIMIT_EXCEEDED", "Prepared operation/dependencies exceed 2 MiB.");
+    size_t total = bytes; for (const auto& ticket : m_prepared) total += ticket.bytes;
+    // Bound capabilities without silently evicting another still-live plan.
+    for (auto it = m_prepared.begin(); it != m_prepared.end();) {
+      if (it->used || Clock::now() - it->created > std::chrono::minutes(5)) { total -= it->bytes; it = m_prepared.erase(it); }
+      else ++it;
+    }
+    require(m_prepared.size() < 8 && total <= 8 * 1024 * 1024, "LIMIT_EXCEEDED", "At most 8 live prepared edits/8 MiB; apply them or wait for expiry.");
+    std::random_device random; std::ostringstream token;
+    for (int i = 0; i < 4; ++i) token << std::hex << std::setw(8) << std::setfill('0') << random();
+    int rev = integer(params, "expectedRevision", 1, INT32_MAX);
+    m_prepared.push_back({token.str(), document->id(), rev, operation, guard, Clock::now(), false, bytes});
+    auto result = previewMetadata(document); result.update(preview);
+    result["editToken"] = token.str(); result["expiresInMs"] = 300000; result["status"] = "prepared"; result["applied"] = false;
+    return result;
+  }
+  Json applyEdit(Document* document, const Json& params) {
+    auto token = text(params, "editToken", 32);
+    auto it = std::find_if(m_prepared.begin(), m_prepared.end(), [&](const PreparedEdit& ticket) { return ticket.token == token; });
+    require(it != m_prepared.end() && it->documentId == document->id(), "EDIT_TOKEN_INVALID", "Token is unknown, belongs to another document, or was invalidated by disconnect. Prepare again.");
+    require(!it->used, "EDIT_TOKEN_USED", "This token was already attempted; inspect before preparing another edit.");
+    require(Clock::now() - it->created <= std::chrono::minutes(5), "EDIT_TOKEN_EXPIRED", "Prepared edit expired. Inspect and prepare again.");
+    it->used = true;
+    auto method = it->operation["method"].get<std::string>();
+    auto result = previewMetadata(document); int currentRevision = result["revision"];
+    try {
+      auto preview = correction(document, method, it->operation);
+      if (editGuard(document, it->operation, preview, &it->guard) != it->guard) {
+        result["status"] = "conflict"; result["applied"] = false; result["reason"] = "EDIT_DEPENDENCIES_CHANGED";
+        result["nextAction"] = "Preserve the user's changes. Inspect and prepare a revised operation; do not reapply the old plan.";
+        return result;
+      }
+    } catch (const BridgeError& error) {
+      result["status"] = "conflict"; result["applied"] = false; result["reason"] = error.code;
+      result["nextAction"] = "An operation dependency is no longer valid. Inspect and reconsider; no edit was applied.";
+      return result;
+    }
+    auto operation = it->operation; operation["dryRun"] = false;
+    // Prevent a PNG changing between guard validation and the actual decode.
+    if (method == "stamp_region") operation["expectedSourceHash"] = it->guard["sourceHash"];
+    auto applied = correction(document, method, operation);
+    update_screen_for_document(document); result = inspect(document); result.update(applied);
+    result["status"] = "applied"; result["applied"] = true; result["preparedRevision"] = it->revision;
+    result["rebased"] = currentRevision != it->revision;
+    return result;
+  }
   void setPixels(Document* document, const Json& params) {
     auto sprite = document->sprite();
     auto target = paintLayer(document, params);
@@ -2568,10 +2740,11 @@ private:
       "fill_selection", "translate_selection", "activate_document", "set_active_site", "close_document", "copy_cel",
       "duplicate_frames", "reorder_frames", "edit_cels", "set_frame_durations", "transform_selection", "resize_canvas",
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
-      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask", "stamp_region"};
+      "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask", "stamp_region", "interaction_state", "prepare_edit", "apply_edit"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.12.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.13.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
+    if (method == "interaction_state") return interactionState(params);
     if (method == "set_paused") {
       require(params.contains("paused") && params["paused"].is_boolean(), "INVALID_PARAMS", "paused must be boolean.");
       bool paused = params["paused"].get<bool>();
@@ -2581,20 +2754,22 @@ private:
       updateControl();
       return {{"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"sessionId", m_session}};
     }
-    uiIdle();
+    bool read = readMethod(method);
+    bool panSafe = read || correctionMethod(method) || method == "apply_edit";
+    require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
+    uiIdle(panSafe);
     if (method == "list_assets") return listAssets(params);
     if (method == "preview_asset") return previewAsset(params);
     if (method == "list_documents") {
       Json documents = Json::array();
       for (auto item : ctx->documents()) {
         auto document = static_cast<Document*>(item);
-        DocumentReader reader(document, 0);
+        auto reader = readLock(document);
+        documentViewsIdle(document, true);
         documents.push_back(summary(document));
       }
       return {{"documents", documents}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"paused", m_paused}, {"sessionId", m_session}};
     }
-    bool read = method == "inspect" || method == "render" || method == "contact_sheet" || method == "render_onion_skin" || method == "render_selection" || method == "render_frame_diff" || method == "render_layer" || method == "analyze_animation" || method == "read_pixels" || method == "extract_mask";
-    require(read || !m_paused, "PAUSED", "Bridge is paused. Explicitly resume before modifying documents.");
     if (method == "create") {
       require(ctx->documents().size() < 32, "LIMIT_EXCEEDED", "At most 32 documents may be opened through this bridge.");
       int width = integer(params, "width", 1, 1024), height = integer(params, "height", 1, 1024);
@@ -2618,7 +2793,9 @@ private:
     }
     auto document = findDocument(params);
     if (read) {
-      DocumentReader reader(document, 0);
+      auto reader = readLock(document);
+      documentViewsIdle(document, true);
+      if (method == "prepare_edit") return prepareEdit(document, params);
       if (method == "inspect") return inspect(document);
       if (method == "read_pixels") return readPixels(document, params);
       if (method == "extract_mask") return extractMask(document, params);
@@ -2631,20 +2808,25 @@ private:
       return renderFrame(document, params);
     }
     if (method == "activate_document") return activateDocument(document, params);
-    require(ctx->activeDocument() == document, "INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.");
+    if (ctx->activeDocument() != document)
+      throw BridgeError("INACTIVE_DOCUMENT", "Target must be the active GUI document. Refusing to switch silently.", {{"notStarted", true}});
     if (method == "set_active_site") return focusSite(document, params);
     if (method == "close_document") return closeDocument(document, params);
     if (method == "export_png" || method == "export_sprite_sheet" || method == "export_animation") {
-      DocumentReader reader(document, 0);
+      auto reader = readLock(document);
+      documentViewsIdle(document);
       checkRevision(document, params);
       return method == "export_animation" ? exportAnimation(document, params) : exportPng(document, params, method == "export_sprite_sheet");
     }
     // Check and mutate under the same lock, on the same UI tick.
-    ContextWriter writer(ctx, 0);
-    checkRevision(document, params);
-    documentViewsIdle(document);
+    auto writer = writeLock(ctx);
+    documentViewsIdle(document, panSafe);
+    if (method != "apply_edit") checkRevision(document, params);
     SelectionGuard selection(document);
     Json extra = Json::object();
+    if (method == "apply_edit") {
+      auto result = applyEdit(document, params); selection.committed = true; return result;
+    }
     if (method == "set_pixels") {
       // setPixels owns its transaction but reuses this writer lock.
       setPixels(document, params);
@@ -2747,7 +2929,8 @@ private:
       return response;
     } catch (const BridgeError& error) {
       int code = error.code == "INVALID_REQUEST" ? -32600 : error.code == "INVALID_PARAMS" ? -32602 : error.code == "METHOD_NOT_FOUND" ? -32601 : -32000;
-      return Json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", error.what()}, {"data", {{"code", error.code}}}}}}).dump();
+      auto data = error.data; data["code"] = error.code;
+      return Json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", error.what()}, {"data", data}}}}).dump();
     } catch (const LockedDocumentException& error) {
       return Json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32000}, {"message", error.what()}, {"data", {{"code", "BUSY"}}}}}}).dump();
     } catch (const Json::parse_error& error) {
