@@ -47,7 +47,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     await application.server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 67);
+    assert.equal(tools.length, 70);
     assert.equal(tools.find((tool) => tool.name === "libresprite_inspect")?.annotations?.readOnlyHint, true);
     await client.callTool({ name: "libresprite_connect", arguments: {} });
     const rendered = await client.callTool({ name: "libresprite_render", arguments: { documentId: 1, frame: 0 } });
@@ -76,6 +76,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     const target = { documentId: 1, expectedRevision: 1 };
     const paint = { ...target, layerId: 1, frame: 0, color: { r: 10, g: 20, b: 30, a: 255 } };
     const valid = [
+      ["interaction_state", { documentId: 1 }],
+      ["prepare_edit", { ...target, operation: { method: "edit_pixels", edits: [{ layerId: 1, frame: 0, pixels: [{ x: 1, y: 2, r: 1, g: 2, b: 3, a: 255 }] }] } }],
+      ["apply_edit", { documentId: 1, editToken: "a".repeat(32) }],
       ["create", { width: 16, height: 16, colorMode: "indexed" }],
       ["read_pixels", { documentId: 1, layerId: 1, frame: 0, x: -1, y: 2, width: 4, height: 2 }],
       ["extract_mask", { documentId: 1, layerId: 1, frame: 0, x: 0, y: 0, width: 8, height: 8, seed: { x: 1, y: 1 } }],
@@ -140,7 +143,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
       const preview = ["preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "extract_mask"].includes(method);
       assert.equal((result.content as Array<{ type: string }>).some((item) => item.type === "image"), preview);
       assert.equal(tools.find((tool) => tool.name === `libresprite_${method}`)?.annotations?.readOnlyHint ?? false,
-        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation", "read_pixels", "extract_mask"].includes(method));
+        ["list_assets", "preview_asset", "contact_sheet", "render_onion_skin", "render_selection", "render_frame_diff", "render_layer", "analyze_animation", "read_pixels", "extract_mask", "interaction_state", "prepare_edit"].includes(method));
     }
     assert.equal(requests.find((item) => item.method === "create_layer")?.params.type, "image");
     assert.equal(requests.find((item) => item.method === "read_pixels")?.params.encoding, "runs");
@@ -204,6 +207,9 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
     assert.equal(selectionAware.isError, undefined);
     assert.equal(requests.at(-1)?.params.respectSelection, true);
     const rejected = [
+      ["apply_edit", { documentId: 1, editToken: "bad" }],
+      ["prepare_edit", { ...target, operation: { method: "save", path: "x.ase" } }],
+      ["prepare_edit", { ...target, operation: { method: "edit_pixels", expectedRevision: 9, edits: [] } }],
       ["stamp_region", { ...target, source: { path: "part.png", x: 0, y: 0, width: 1, height: 1 }, edits: [{ layerId: 1, frame: 0, x: 0, y: 0 }] }],
       ["stamp_region", { ...target, mode: "replace", source: { path: "part.png", layerId: 1, frame: 0, x: 0, y: 0, width: 1, height: 1 }, edits: [{ layerId: 1, frame: 0, x: 0, y: 0 }] }],
       ["stamp_region", { ...target, mode: "replace", source: { path: "part.png", x: 0, y: 0, width: 1, height: 1 }, edits: [] }],

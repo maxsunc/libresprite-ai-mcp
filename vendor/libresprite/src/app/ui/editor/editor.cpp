@@ -37,6 +37,7 @@
 #include "app/ui/editor/moving_pixels_state.h"
 #include "app/ui/editor/pixels_movement.h"
 #include "app/ui/editor/play_state.h"
+#include "app/ui/editor/scrolling_state.h"
 #include "app/ui/editor/standby_state.h"
 #include "app/ui/main_window.h"
 #include "app/ui/skin/skin_theme.h"
@@ -291,6 +292,21 @@ void Editor::setState(const EditorStatePtr& newState)
 void Editor::backToPreviousState()
 {
   setStateInternal(EditorStatePtr(NULL));
+}
+
+// LibreSprite AI MCP, 2026-10-14: do not mistake a temporary pan over an
+// unfinished pixel movement/drawing state for an idle editing document.
+bool Editor::isIdleForAutomation() const
+{
+  return m_state && typeid(*m_state) == typeid(StandbyState);
+}
+
+bool Editor::isViewOnlyPanning() const
+{
+  return m_statesHistory.size() == 2 &&
+    dynamic_cast<ScrollingState*>(m_state.get()) &&
+    m_statesHistory.previous() &&
+    typeid(*m_statesHistory.previous()) == typeid(StandbyState);
 }
 
 void Editor::getInvalidDecoratoredRegion(gfx::Region& region)

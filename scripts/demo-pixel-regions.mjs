@@ -19,7 +19,7 @@ delete environment.SDL_VIDEODRIVER;
 const transport = new StdioClientTransport({ command: packagedMcp ? "bash" : process.execPath,
   args: [packagedMcp ? path.join(packagedMcp, "start-mcp.sh") : path.join(root, "dist/index.js")],
   env: { ...environment, LIBRESPRITE_SOCKET: socketPath, LIBRESPRITE_ASSET_ROOT: assets }, stderr: "pipe" });
-const client = new Client({ name: "libresprite-pixel-region-review", version: "0.12.0" });
+const client = new Client({ name: "libresprite-pixel-region-review", version: "0.13.0" });
 let documentId;
 async function request(method, args = {}, output) {
   const response = await client.callTool({ name: `libresprite_${method}`, arguments: args });
@@ -51,7 +51,7 @@ function preserved(before, after) {
 const color = (r, g, b, a = 255) => ({ r, g, b, a });
 try {
   await client.connect(transport); transport.stderr?.pipe(process.stderr);
-  assert.equal((await client.listTools()).tools.length, 67);
+  assert.equal((await client.listTools()).tools.length, packagedMcp ? 67 : 70);
   const launched = await request("launch");
   const deadline = Date.now() + 20_000;
   let status;
@@ -62,7 +62,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
-  assert.equal(status.bridgeVersion, "0.12.0");
+  assert.equal(status.bridgeVersion, packagedMcp ? "0.12.0" : "0.13.0");
   await request("set_paused", { paused: false });
   const doc = await request("create", { width: 32, height: 24, name: "Pixel regions — generated reusable part" });
   documentId = doc.documentId;

@@ -163,6 +163,14 @@ void ResourceFinder::includeHomeDir(const char* filename)
 
 void ResourceFinder::includeUserDir(const char* filename)
 {
+  // LibreSprite AI MCP, 2026-10-14: opt-in profile isolation for disposable
+  // gesture tests and branch review; defaults/personal profiles are unchanged.
+  // This is process environment configuration, not an agent bridge capability.
+  const char* userDir = std::getenv("LIBRESPRITE_USER_DIR");
+  if (userDir && *userDir) {
+    addPath(base::join_path(userDir, filename));
+    return;
+  }
 #ifdef _WIN32
 
   if (App::instance()->isPortable()) {

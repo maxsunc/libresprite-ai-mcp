@@ -1,5 +1,22 @@
 # Development milestones
 
+## 0.13.0 — Cooperative editing (unreleased draft branch, 2026-10-14)
+
+- 70 tools: lightweight readiness during gestures/pause, read-only immutable
+  prepared correction tokens, and single-use guarded native apply.
+- MCP waits only on proven pre-execution busy/lock acquisition failures, then
+  returns recoverable deferred/conflict results. No native delayed write queue,
+  blind revision substitution, retries of uncertain outcomes or automatic resume.
+- Proven viewport-only panning may coexist with reads/atomic corrections; pending
+  drawing/selection/cel transformations and view-disrupting operations stay guarded.
+  Exact Standby checks fix the inheritance-based unfinished-transform loophole.
+- Prepared pixel/move/stamp operations can rebase across disjoint raw-pixel/GUI
+  selection changes, preserving user work on overlap/source/semantic conflicts.
+  Existing native Undo, session/active-document/path/resource guards remain.
+- Opt-in process profile isolation and disposable native/real-MCP gesture tests;
+  explicit manual-review checklist. Main, approved packages and personal artwork/
+  configuration are not replaced. No binary release or new platform/CI milestone.
+
 ## 0.12.0 — Apple Silicon package refresh (2026-10-12)
 
 - Rebuild the editor and production MCP server as a separate v0.12.0 package with
