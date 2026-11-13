@@ -3,6 +3,8 @@
 Build the native editor and run `npm ci` and `npm run build` first; see the
 [build guide](../../docs/building.md) and [live workflow](../../docs/live-bridge.md).
 These templates contain no credentials or machine-specific home directories.
+Windows portable-package users can skip the source-build prerequisites and use
+the bundled Node runtime as described below.
 
 Replace `/absolute/path/to/libresprite-ai-mcp` with the absolute path to your
 checkout. The server finds its editor, runtime directory, and asset root relative
@@ -21,6 +23,26 @@ appropriate file rather than replacing your entire configuration.
 Node runtime and server. Replace `C:\\Tools\\LibreSprite-AI` with the extracted
 folder's absolute path; no separately installed Node is needed. See
 [the Windows guide](../../docs/windows.md) for build/review limits and startup.
+
+## Pi
+
+Use Pi's built-in MCP support and merge a `mcpServers.libresprite` entry into
+`~/.pi/agent/mcp.json` for all projects, or `.pi/mcp.json` for one trusted project.
+Use [`stdio.json`](stdio.json) for a source build or
+[`windows-stdio.json`](windows-stdio.json) for the Windows portable package.
+Replace the placeholder paths; optionally add `env.LIBRESPRITE_ASSET_ROOT` to
+scope artwork to a folder of your choice.
+
+Set `"exposure": "deferred"` on the server entry so Pi discovers tools when
+needed. Run `/reload`, then `/mcp`; `pi mcp list` also checks the connection from
+a terminal. A connected current server advertises **70 tools**. Pi starts the
+MCP server automatically, but the agent must explicitly launch/connect/resume the
+editor before editing. See the [README's complete Pi setup and example prompt](../../README.md#use-with-pi).
+
+An extension replacing Pi's `/mcp` command overrides the built-in configuration;
+remove that replacement to use these instructions. Keep personal `.pi/mcp.json`
+files out of version control, especially if they contain credentials for other
+servers.
 
 ## OpenCode V2
 

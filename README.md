@@ -6,8 +6,9 @@ application**, with native undo and rendered PNG feedback.
 
 **Source alpha — v0.13.0.** This is an independent development project, not an
 official LibreSprite release. A stock LibreSprite installation does not contain
-this bridge. A relocatable Apple Silicon review-package builder is now provided;
-downloadable signed/notarized releases are not published yet.
+this bridge. Review-package builders are available for Apple Silicon macOS and
+Windows x64. No public binary releases are published; Windows packages remain
+private-review-only pending a third-party license/corresponding-source audit.
 
 ## Current scope
 
@@ -23,9 +24,11 @@ and independently decoded exports. Linux transport is implemented but the full
 editor workflow has not been validated here. **Experimental Windows x64 support**
 now includes a native named-pipe bridge, build instructions and a standalone
 private-review ZIP builder with bundled Node.js; see [the Windows guide](docs/windows.md).
-Windows smoke tests cover real MCP/editor editing and file round trips, but a full
-manual GUI review and third-party redistribution/license audit are still required.
-CI does not certify native GUI behavior on every platform.
+Windows validation includes successful real-editor calls to **all 70 MCP tools**,
+the full native regression suite, and portable-package relocation to Unicode/spaced
+paths without MSYS2 on the runtime PATH. A full manual mouse/keyboard/pen review,
+code signing and third-party redistribution/license audit remain outstanding.
+CI jobs are provided, but automated tests do not certify every GUI workflow.
 
 - `vendor/libresprite/`: pinned LibreSprite source, including its dependency submodules.
 - `vendor/libresprite.upstream.json`: upstream revision and dependency provenance.
@@ -66,8 +69,10 @@ They operate on the local development build.
 
 Configure your MCP client to run
 `node /absolute/path/to/libresprite-ai-mcp/dist/index.js`; merge one of the
-[generic stdio or OpenCode V2 templates](examples/mcp/README.md) into your existing
-settings and replace the placeholder path.
+[client configuration templates](examples/mcp/README.md) into your existing
+settings and replace the placeholder path. Windows packages include their own
+Node runtime; see the [Pi example below](#use-with-pi) or the
+[Windows stdio template](examples/mcp/windows-stdio.json).
 Use `libresprite_launch`, then `libresprite_connect`, then explicitly resume
 with `libresprite_set_paused` before editing. A normal editor launched without
 automation flags remains disconnected from agents.
@@ -78,12 +83,94 @@ copies of artwork, not your only originals. The server may be configured with
 the live guide for details. Your client/model needs to support MCP image results
 to see previews.
 
+### Use with Pi
+
+Pi can start the MCP server automatically and let the agent launch and use the
+editor. With Pi's built-in MCP support:
+
+1. Merge the entry below into `~/.pi/agent/mcp.json` (on Windows,
+   `%USERPROFILE%\.pi\agent\mcp.json`) for all projects, or `.pi/mcp.json` for
+   one trusted project. Preserve any existing servers/settings.
+2. Replace `C:/Tools/LibreSprite-AI` with the extracted Windows package folder,
+   and `C:/Art/Sprites` with a folder for disposable artwork. These are example
+   paths, not required install locations.
+
+   ```json
+   {
+     "mcpServers": {
+       "libresprite": {
+         "command": "C:/Tools/LibreSprite-AI/mcp/runtime/node.exe",
+         "args": ["C:/Tools/LibreSprite-AI/mcp/dist/index.js"],
+         "env": {
+           "LIBRESPRITE_ASSET_ROOT": "C:/Art/Sprites"
+         },
+         "exposure": "deferred",
+         "description": "Create, inspect, draw and animate pixel art in a visible LibreSprite editor, with native undo and PNG feedback."
+       }
+     }
+   }
+   ```
+
+   For a source build on any supported platform, use `"command": "node"` and
+   `"args": ["/absolute/path/to/libresprite-ai-mcp/dist/index.js"]` instead.
+   Set `LIBRESPRITE_ASSET_ROOT` to a suitable absolute path for your platform.
+3. Run `/reload` in Pi, then `/mcp` to check the connection. From a terminal,
+   `pi mcp list` should report `libresprite: connected, 70 tools`. With
+   `deferred` exposure, Pi discovers tools when needed rather than loading all
+   70 definitions into every prompt.
+4. Ask the agent, for example:
+
+   > Use the LibreSprite MCP to launch the editor if needed, connect, and
+   > explicitly resume agent editing. Create a 16×16 slime sprite using the
+   > native drawing tools, render a preview, and save it as `slime.ase` inside
+   > the configured asset root.
+
+Pi starts the stdio server, **not the editor**, when it connects. The agent calls
+`libresprite_launch`, `libresprite_connect`, then `libresprite_set_paused`
+(`paused: false`) when instructed to edit. If a bridge-enabled editor is already
+running, connect instead of launching another. An ordinary manually launched
+window cannot be attached retroactively. A pause made in the editor must be
+released there, not by the agent.
+
+These steps use Pi's built-in MCP support. An extension that replaces `/mcp`
+may use a different configuration; remove that replacement to use these steps.
+Start with copies of artwork: the agent can edit and save inside its asset root.
+
+## Windows x64 portable review package
+
+The Windows package keeps `LibreSprite-AI.exe`, its DLLs/resources, and a
+production MCP server with bundled Node.js together. No separate Node, MSYS2,
+compiler or administrator access is needed **to run the package**. An external
+AI/MCP client and model are still required. Normal manual editing does not
+require an MCP client.
+
+After completing the [Windows build prerequisites](docs/windows.md#building-from-source)
+and building the editor/server, create a private-review folder and ZIP with:
+
+```sh
+npm run package:windows
+```
+
+Output goes under `build/packages/`; existing output is refused. Extract the
+whole package, keep its files together, and run `doctor.cmd` for read-only setup
+diagnostics. Use the [Pi setup above](#use-with-pi) or another
+[stdio client](examples/mcp/windows-stdio.json) to enable agent editing.
+Preferences/recovery use `%APPDATA%\LibreSprite AI`, separate from stock
+LibreSprite. Assets default to `%USERPROFILE%\Pictures\LibreSprite AI MCP`
+unless `LIBRESPRITE_ASSET_ROOT` is set.
+
+**Windows 11 x64 is the initial target.** The package is unsigned and may trigger
+SmartScreen. No installer or public Windows download is provided. Do not publicly
+redistribute generated binaries until the third-party license and corresponding
+source audit is complete; bundled notices alone do not satisfy that work. See
+[the Windows guide](docs/windows.md) for build, relocation, testing and release limits.
+
 ## Apple Silicon review package
 
-**Branch review:** v0.13.0 cooperative editing is experimental and awaiting manual
-testing in its draft PR. Readiness/waiting, safe view-only panning and guarded
-prepare/apply corrections let manual edits coexist without blindly overwriting
-them. See [cooperative editing](docs/cooperative-editing.md) and
+**v0.13.0 review:** Cooperative editing remains experimental. Readiness/waiting,
+safe view-only panning and guarded prepare/apply corrections let manual edits
+coexist without blindly overwriting them. See
+[cooperative editing](docs/cooperative-editing.md) and
 [the v0.13 checklist](docs/testing-v0.13.md). Approved v0.9/v0.12 packages are not rebuilt.
 
 After installing the [build prerequisites](docs/building.md) and `npm ci`, run:
@@ -209,7 +296,6 @@ editing important artwork.
 The v0.9.0 Apple Silicon package was user-tested and approved on 2026-10-09.
 Downloadable binary releases and Developer ID signing/notarization remain separate
 decisions; no binary release has been published.
-The earlier native-CI/Linux milestone was skipped at the user's request.
 Linux full-editor validation remains outstanding; the new Windows port is an
 experimental, separate review effort with [its own limits](docs/windows.md).
 

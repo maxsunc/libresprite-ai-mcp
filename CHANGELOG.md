@@ -10,8 +10,13 @@
   fixtures and native pipe ACL/exclusivity/backpressure/reconnect tests.
 - Standalone unsigned private-review ZIP builder with Node, transitive DLLs,
   resources, production MCP dependencies, notices, source snapshot and checksums.
-- Windows native/MCP/relocation smoke checks; public binary redistribution remains
-  blocked on the third-party source/license audit and manual GUI review.
+- Full Windows native regression suite and successful real-editor coverage for
+  all 70 advertised MCP tools, including PNG image results and retained exports;
+  portable-package relocation checks without MSYS2 on the runtime PATH.
+- Public, placeholder-only Pi setup instructions covering bundled Node, tool
+  discovery, launch/connect/resume, artwork scope and configuration privacy.
+- Public binary redistribution remains blocked on the third-party source/license
+  audit; code signing and full manual GUI review remain outstanding.
 
 ## 0.13.0 — Cooperative editing (unreleased draft branch, 2026-10-14)
 

@@ -18,6 +18,7 @@ __pycache__/
 /assets/
 
 # Personal client configuration and credentials; tracked examples live elsewhere.
+/.pi/mcp.json
 /opencode.json
 /opencode.jsonc
 /.env

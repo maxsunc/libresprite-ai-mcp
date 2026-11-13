@@ -35,8 +35,10 @@ unsaved artwork. macOS/Linux keep their existing Unix-socket transport.
    Replace the example location with your extracted folder. Merge the server
    entry into your client's configuration; do not replace unrelated settings.
    OpenCode uses its existing `mcp.servers` shape with a command array containing
-   those same two paths. `start-mcp.cmd` is a convenience stdio launcher; prefer
-   the direct `node.exe` entry above for clients that don't execute `.cmd` files.
+   those same two paths. Pi users can follow the
+   [README's setup, verification and first-edit prompt](../README.md#use-with-pi).
+   `start-mcp.cmd` is a convenience stdio launcher; prefer the direct `node.exe`
+   entry above for clients that don't execute `.cmd` files.
 4. Run `doctor.cmd` in a terminal for read-only diagnostics. `doctor.cmd --connect`
    explicitly connects to a running bridge, then disconnects (which pauses it).
 
