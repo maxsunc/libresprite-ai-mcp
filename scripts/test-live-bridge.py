@@ -2,6 +2,7 @@
 """Integration test against a NEW real GUI process, never the user's editor."""
 import base64
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -32,9 +33,13 @@ BUILD = Path(os.environ.get("LIBRESPRITE_BUILD_DIR", ROOT / "build/libresprite")
 
 class Client:
     def __init__(self, path):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.settimeout(15)
-        self.socket.connect(str(path))
+        if os.name == "nt":
+            from windows_pipe_client import WindowsPipeClient
+            self.socket = WindowsPipeClient(path)
+        else:
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.socket.settimeout(15)
+            self.socket.connect(str(path))
         self.reader = self.socket.makefile("rb")
         self.session = None
 
@@ -85,13 +90,16 @@ def main():
     runtime.mkdir(mode=0o700, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="test-", dir=runtime) as temporary:
         directory = Path(temporary)
-        endpoint = directory / "b.sock"
+        endpoint = (r"\\.\pipe\libresprite-ai-test-" + uuid.uuid4().hex) if os.name == "nt" else directory / "b.sock"
         assets = directory / "assets"
         assets.mkdir()
         log_path = directory / "editor.log"
         with log_path.open("w") as log:
             environment = os.environ.copy()
-            environment.pop("SDL_VIDEODRIVER", None)
+            if environment.get("LIBRESPRITE_TEST_HEADLESS") == "1":
+                environment["SDL_VIDEODRIVER"] = "dummy"
+            else:
+                environment.pop("SDL_VIDEODRIVER", None)
             environment["LIBRESPRITE_USER_DIR"] = str(directory / "profile")
             (directory / "profile").mkdir()
             # No floating preview overlay on the generated gesture-test canvas.
@@ -100,12 +108,18 @@ def main():
             client = None
             try:
                 deadline = time.monotonic() + 20
-                while not endpoint.exists():
-                    if process.poll() is not None or time.monotonic() > deadline:
-                        raise RuntimeError("GUI failed to start:\n" + log_path.read_text())
-                    time.sleep(0.05)
-                assert endpoint.stat().st_mode & 0o777 == 0o600
-                client = Client(endpoint)
+                while True:
+                    try:
+                        client = Client(endpoint)
+                        break
+                    except OSError as error:
+                        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED, errno.EBUSY) and getattr(error, "winerror", None) not in (2, 231):
+                            raise
+                        if process.poll() is not None or time.monotonic() > deadline:
+                            raise RuntimeError("GUI failed to start:\n" + log_path.read_text()) from error
+                        time.sleep(0.05)
+                if os.name != "nt":
+                    assert endpoint.stat().st_mode & 0o777 == 0o600
                 status = client.request("status")
                 assert status["paused"] and status["pid"] == process.pid
                 assert status["bridgeVersion"] == "0.13.0" and "prepare_edit" in status["methods"]
@@ -229,7 +243,7 @@ def main():
                 (assets / "escape").symlink_to(directory, target_is_directory=True)
                 client.request("save", {**target(), "path": "escape/escape.ase"}, expected_error="PATH_OUTSIDE_ROOT")
                 client.request("open", {"path": "escape/editor.log"}, expected_error="PATH_OUTSIDE_ROOT")
-                assert not list(assets.glob(".libresprite-save-*"))
+                assert not list(assets.glob(".libresprite-ai-*"))
                 reopened = client.request("open", {"path": "roundtrip.ase"})
                 preview = client.request("render", {"documentId": reopened["documentId"], "frame": 0, "scale": 1})
                 image_path = assets / "reopened.png"
@@ -255,6 +269,7 @@ def main():
                 test_palettes_tags_animation(client, assets, SMOKE)
                 test_cels_and_selection(client, assets, SMOKE)
                 test_navigation(client, assets, SMOKE)
+                print("PASS: full native bridge regression suite completed.")
             finally:
                 if client:
                     client.close()

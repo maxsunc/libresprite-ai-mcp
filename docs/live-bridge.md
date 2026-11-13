@@ -57,6 +57,12 @@ replace unrelated settings. Personal client configuration stays untracked.
 | `LIBRESPRITE_SOCKET` | `.runtime/bridge.sock` in this repo |
 | `LIBRESPRITE_ASSET_ROOT` | `assets/` in this repo |
 
+On Windows, the development executable ends in `.exe` and the default endpoint
+is a per-user/location `\\\\.\\pipe\\libresprite-ai-…` named pipe, not a socket file.
+The private-review package includes Node and resolves its bundled `.exe` automatically.
+See [Windows setup and packaging](windows.md); Unix permission/path-length rules
+below apply only to macOS/Linux.
+
 The launcher creates the asset directory if absent. Native file tools only
 accept paths **relative to that root**. Asset contents, socket files, editor
 logs, and build outputs are ignored by Git. Copy finished assets elsewhere or
@@ -935,7 +941,7 @@ Animation export limits: **1,048,576 output pixels per frame**, **8,388,608
 output pixels summed across emitted steps**, and **32 MiB encoded-file bytes**.
 All frames count toward the pixel budget, even repeated or blank frames. Reduce
 frames or scale if refused. The native GIF encoder may briefly use a private
-root-level `.libresprite-gif-*` scratch file; final publication remains atomic,
+root-level `.libresprite-ai-*.gif` scratch file; final publication remains atomic,
 and failure cleans up scratch/publication files without touching the destination.
 
 The editor/bridge open and thumbnail tools still accept only native sprites
@@ -988,16 +994,17 @@ supported—save `.ase` to retain the editable sprite.
   unique sibling file before publication. No-overwrite saves use atomic hard
   linking; overwrite saves use atomic rename. The root policy is not a
   hardened sandbox against hostile processes running as the same OS user.
-- Unbundled development builds default to ordinary LibreSprite preferences/recovery
-  locations. Explicitly set `LIBRESPRITE_USER_DIR` to a separate profile for branch
+- Windows builds use a separate `%APPDATA%\\LibreSprite AI` preferences/recovery
+  profile. Other unbundled development builds default to ordinary LibreSprite locations. Explicitly set `LIBRESPRITE_USER_DIR` to a separate profile for branch
   review; disposable tests do this automatically for their own child editors.
   The approved packaged app retains its separate bundle/profile defaults.
 
 ## Current limits
 
-- Native transport: **macOS and Linux** (tested on macOS/Apple Silicon); Windows
-  is explicitly unsupported for now. Stock editor behavior remains unchanged
-  when no automation flags are passed.
+- Native transport: **macOS, Linux and experimental Windows x64**. macOS/Apple
+  Silicon has the established validation; Windows has native boundary/MCP smoke
+  tests and still needs full visible-GUI review. See [Windows limits](windows.md).
+  Ordinary launches without automation flags remain disconnected from agents.
 - One bridge client and serialized short requests on the UI thread. There is
   no TCP listener, arbitrary script tool, or remote network endpoint.
 - At most a 1024×1024 canvas, 1,048,576 preview/export pixels per image, 256 source

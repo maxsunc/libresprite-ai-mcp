@@ -8,6 +8,7 @@ import path from "node:path";
 import { resolveOptions } from "../config.js";
 import { diagnose } from "../doctor.js";
 import { inspectMachO } from "../macho.js";
+import { windowsPipeName } from "../endpoint.js";
 
 test("read-only Mach-O parser bounds checks commands and preserves local paths", () => {
   const filename = Buffer.from("@loader_path/../Frameworks/a library.dylib\0");
@@ -41,14 +42,16 @@ test("development and packaged defaults are distinct and explicit overrides win"
   try {
     const development = resolveOptions(root, {});
     assert.equal(development.assetRoot, path.join(root, "assets"));
-    assert.equal(development.socketPath, path.join(root, ".runtime/bridge.sock"));
+    assert.equal(development.socketPath, process.platform === "win32" ? windowsPipeName(root) : path.join(root, ".runtime/bridge.sock"));
+    assert.equal(development.executable, path.join(root, `build/libresprite/bin/libresprite${process.platform === "win32" ? ".exe" : ""}`));
     await writeFile(path.join(root, "package-layout.json"), '{"layout":1}');
     const packaged = resolveOptions(root, {});
-    assert.equal(packaged.executable, path.resolve(root, "../LibreSprite AI.app/Contents/MacOS/libresprite"));
+    assert.equal(packaged.executable, path.resolve(root, process.platform === "win32" ? "../LibreSprite-AI.exe" : "../LibreSprite AI.app/Contents/MacOS/libresprite"));
     assert.equal(packaged.assetRoot, path.join(os.homedir(), "Pictures/LibreSprite AI MCP"));
-    assert.equal(packaged.socketPath, path.join(os.tmpdir(), `lsai-${process.getuid?.() ?? "user"}`, "b.sock"));
-    const explicit = resolveOptions(root, { LIBRESPRITE_EXECUTABLE: "/custom/editor", LIBRESPRITE_SOCKET: "/custom/b.sock", LIBRESPRITE_ASSET_ROOT: "/custom/art" });
-    assert.deepEqual(explicit, { executable: "/custom/editor", socketPath: "/custom/b.sock", assetRoot: "/custom/art" });
+    assert.equal(packaged.socketPath, process.platform === "win32" ? windowsPipeName(root) : path.join(os.tmpdir(), `lsai-${process.getuid?.() ?? "user"}`, "b.sock"));
+    const socketPath = process.platform === "win32" ? "\\\\.\\pipe\\libresprite-ai-custom" : "/custom/b.sock";
+    const explicit = resolveOptions(root, { LIBRESPRITE_EXECUTABLE: "/custom/editor", LIBRESPRITE_SOCKET: socketPath, LIBRESPRITE_ASSET_ROOT: "/custom/art" });
+    assert.deepEqual(explicit, { executable: path.resolve("/custom/editor"), socketPath, assetRoot: path.resolve("/custom/art") });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -59,7 +62,7 @@ test("default diagnostics are read-only and report missing runtime as warnings",
     await mkdir(path.join(root, "bin/data"), { recursive: true });
     await writeFile(executable, '#!/bin/sh\ntouch "$0.was-run"\nexit 1\n', { mode: 0o700 });
     await writeFile(path.join(root, "bin/data/gui.xml"), "fixture");
-    const options = { executable, socketPath: path.join(root, "private/b.sock"), assetRoot: path.join(root, "art") };
+    const options = { executable, socketPath: process.platform === "win32" ? windowsPipeName(root) : path.join(root, "private/b.sock"), assetRoot: path.join(root, "art") };
     const result = await diagnose(options);
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.checks.find((check) => check.name === "socket")?.status, "warning");
@@ -70,8 +73,10 @@ test("default diagnostics are read-only and report missing runtime as warnings",
     const invalid = await diagnose({ ...options, executable: path.join(root, "missing"), socketPath: path.join(root, "x".repeat(200)) });
     assert.equal(invalid.ok, false);
     assert.equal(invalid.checks.find((check) => check.name === "socket-path")?.status, "error");
-    await mkdir(path.join(root, "private"), { mode: 0o755 });
-    const unsafe = await diagnose(options);
-    assert.equal(unsafe.checks.find((check) => check.name === "socket-directory")?.status, "error");
+    if (process.platform !== "win32") {
+      await mkdir(path.join(root, "private"), { mode: 0o755 });
+      const unsafe = await diagnose(options);
+      assert.equal(unsafe.checks.find((check) => check.name === "socket-directory")?.status, "error");
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

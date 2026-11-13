@@ -1,5 +1,6 @@
 // Aseprite    | Copyright (C) 2001-2016  David Capello
 // LibreSprite | Copyright (C) 2018-2022  LibreSprite contributors
+// LibreSprite AI contributors: modified 2026-11-12 for isolated Windows preferences.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License version 2 as
@@ -137,7 +138,8 @@ void ResourceFinder::includeHomeDir(const char* filename)
   // %AppData%/LibreSprite/filename
   wchar_t* env = _wgetenv(L"AppData");
   if (env) {
-    std::string path = base::join_path(base::to_utf8(env), "LibreSprite");
+    // Keep the AI fork's preferences/recovery separate from stock LibreSprite.
+    std::string path = base::join_path(base::to_utf8(env), "LibreSprite AI");
     path = base::join_path(path, filename);
     addPath(path);
     m_default = path;

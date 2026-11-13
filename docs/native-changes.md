@@ -1,5 +1,25 @@
 # Native changes from the pinned LibreSprite source
 
+## 2026-11-12 — experimental Windows x64 port
+
+- `src/app/automation/bridge.cpp` enables Windows while retaining the Unix branch;
+  `windows_pipe.h` implements nonblocking, local-only, current-user ACL pipes with
+  first-instance exclusivity. Existing protocol, UI guards and Undo are reused.
+- `platform_files.h` adds exclusive sibling temporaries and platform-specific
+  atomic publication, UTF-8 conversion, Windows device/stream validation and
+  handle-resolved canonical paths (including junctions). Save/export callers use
+  it on all platforms; native boundary tests also run without the editor GUI.
+- `CMakeLists.txt` targets modern Windows APIs and links Advapi32 for pipe ACLs.
+- `src/app/resource_finder.cpp` isolates Windows preferences/recovery under
+  `%APPDATA%\\LibreSprite AI`, without migrating stock settings. Other OS defaults
+  and explicit `LIBRESPRITE_USER_DIR` remain unchanged.
+- `src/clip/clip_common.h` explicitly includes `<cstdint>` for modern Windows GCC.
+  `src/ft/lib.h` opens Windows font files through the existing UTF-8 file helper
+  and keeps memory-backed FreeType faces alive, avoiding startup crashes from
+  non-ASCII install paths. Both retain their original MIT licenses.
+
+See [Windows build, tests and private packaging limits](windows.md).
+
 ## 2026-10-14 — v0.13.0 cooperative editing (unreleased draft branch)
 
 `src/app/automation/bridge.cpp` adds lightweight readiness, conservative immutable

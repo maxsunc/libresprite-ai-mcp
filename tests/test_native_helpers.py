@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -93,7 +94,7 @@ class SourceImportTest(unittest.TestCase):
         manifest = ROOT / "vendor/libresprite.upstream.json"
         before = manifest.read_bytes()
         result = subprocess.run(
-            ["python3", str(ROOT / "scripts/vendor-libresprite.py")],
+            [sys.executable, str(ROOT / "scripts/vendor-libresprite.py")],
             capture_output=True, text=True, timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)

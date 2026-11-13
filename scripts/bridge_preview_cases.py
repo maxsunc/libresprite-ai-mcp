@@ -180,7 +180,7 @@ def test_assets_previews_exports(client, assets, smoke):
             client.request(method, {**target, **params, "path": path, "overwrite": True}, expected_error=code)
     client.request("export_png", {**target, "frame": 3, "path": "preview-assets/invalid.png"}, expected_error="INVALID_PARAMS")
     client.request("export_sprite_sheet", {**target, "frames": [0, 0], "path": "preview-assets/invalid.png"}, expected_error="INVALID_PARAMS")
-    assert not (directory / "invalid.png").exists() and not list(directory.glob(".libresprite-export-*"))
+    assert not (directory / "invalid.png").exists() and not list(directory.glob(".libresprite-ai-*"))
     replay_params = {**target, "frame": 1, "path": "preview-assets/replay.png"}
     published = client.request("export_png", replay_params, request_id="test-png-export-once")
     (directory / "replay.png").write_bytes(b"manual change in a TEST-OWNED file")
