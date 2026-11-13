@@ -105,7 +105,31 @@ pause behavior, then terminates only that test-owned editor. Do not interrupt it
 with manual gestures. Native helper tests also check the pipe ACL, duplicate-name
 refusal, nonblocking backpressure and reconnect. Set `LIBRESPRITE_TEST_HEADLESS=1`
 for SDL dummy-driver CI checks; those do not certify visible GUI interaction.
-The older Python Unix-socket live-bridge suite is not a Windows test runner.
+The full native regression suite now also supports Windows named pipes:
+
+```sh
+python scripts/test-live-bridge.py
+```
+
+It opens a separate disposable editor and exercises pixel-exact RGBA/indexed/
+grayscale workflows, repeated Undo/Redo, all editing/inspection features,
+resource limits and negative safety cases. Allow several minutes. Windows OS
+mouse/keyboard gesture injection is not covered by this runner.
+
+For successful calls to **every advertised MCP tool**, against the standalone
+package rather than mocks, run:
+
+```sh
+node scripts/test-windows-mcp.mjs 'build/packages/libresprite-ai-0.13.0-windows-x64' --all-tools
+```
+
+This also checks MCP PNG image content, writes per-tool coverage to
+`build/windows-tools-report.json`, and retains generated native sprites, PNGs,
+sprite sheets, GIF and APNG under a new `build/windows-tools-results-*` folder.
+The test fails if any advertised tool has no successful real-editor call. It
+never uses personal artwork or terminates pre-existing editor processes. Successful
+coverage is not a claim that every parameter combination or manual mouse/keyboard/
+pen workflow has been tested.
 
 ## Building the standalone ZIP
 

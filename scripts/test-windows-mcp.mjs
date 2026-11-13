@@ -8,7 +8,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { windowsPipeName } from "../dist/endpoint.js";
 
 assert.equal(process.platform, "win32", "Run this smoke test on native Windows");
-const packageRoot = process.argv[2] ? path.resolve(process.argv[2]) : undefined;
+const allTools = process.argv.includes("--all-tools");
+const packageArgument = process.argv.slice(2).find((arg) => arg !== "--all-tools");
+const packageRoot = packageArgument ? path.resolve(packageArgument) : undefined;
 const serverRoot = packageRoot ? path.join(packageRoot, "mcp") : process.cwd();
 const executable = packageRoot ? path.join(packageRoot, "LibreSprite-AI.exe")
   : process.env.LIBRESPRITE_EXECUTABLE ?? path.resolve("build/libresprite/bin/libresprite.exe");
@@ -21,7 +23,13 @@ const env = { ...process.env, LIBRESPRITE_SOCKET: windowsPipeName(temporary), LI
   LIBRESPRITE_ASSET_ROOT: assets, LIBRESPRITE_USER_DIR: profile };
 if (packageRoot) env.PATH = `${process.env.SystemRoot}\\System32;${process.env.SystemRoot}`;
 if (process.env.LIBRESPRITE_TEST_HEADLESS === "1") env.SDL_VIDEODRIVER = "dummy";
-let client, pid;
+let client, pid, completed = false, toolCatalog = [];
+const successes = {}, expectedErrors = {};
+const artifacts = allTools ? await mkdtemp(path.resolve("build/windows-tools-results-")) : undefined;
+function success(method) {
+  if (allTools && !successes[method]) console.log(`PASS tool: libresprite_${method}`);
+  successes[method] = (successes[method] ?? 0) + 1;
+}
 async function connectMcp() {
   const transport = new StdioClientTransport({
     command: packageRoot ? path.join(serverRoot, "runtime/node.exe") : process.execPath,
@@ -34,13 +42,23 @@ async function connectMcp() {
 async function call(method, args = {}, error) {
   const response = await client.callTool({ name: `libresprite_${method}`, arguments: args });
   const result = JSON.parse(response.content[0].text);
-  if (error) { assert.equal(response.isError, true); assert.equal(result.code, error); }
-  else assert.ok(!response.isError, JSON.stringify(result));
+  if (error) {
+    assert.equal(response.isError, true); assert.equal(result.code, error);
+    expectedErrors[method] = (expectedErrors[method] ?? 0) + 1;
+  } else {
+    assert.ok(!response.isError, JSON.stringify(result));
+    if (!["conflict", "deferred"].includes(result.status)) success(method);
+    for (const image of response.content.filter((part) => part.type === "image")) {
+      assert.equal(image.mimeType, "image/png");
+      assert.equal(Buffer.from(image.data, "base64").subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    }
+  }
   return result;
 }
 async function preview(documentId) {
   const response = await client.callTool({ name: "libresprite_render", arguments: { documentId, frame: 0 } });
   assert.ok(!response.isError, JSON.stringify(response));
+  success("render");
   const image = response.content.find((part) => part.type === "image");
   assert.equal(image.mimeType, "image/png");
   assert.equal(Buffer.from(image.data, "base64").subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
@@ -48,6 +66,7 @@ async function preview(documentId) {
 }
 try {
   client = await connectMcp();
+  toolCatalog = (await client.listTools()).tools.map((tool) => tool.name);
   pid = (await call("launch")).pid;
   assert.ok(Number.isInteger(pid) && pid > 0);
   let status, lastConnectionError;
@@ -59,6 +78,7 @@ try {
     await delay(100);
   }
   assert.ok(status, `Editor pipe did not become ready within 30 seconds: ${JSON.stringify(lastConnectionError)}`);
+  success("connect");
   assert.equal(status.pid, pid);
   assert.equal(status.paused, true);
   await call("create", { width: 16, height: 16 }, "PAUSED");
@@ -104,6 +124,10 @@ try {
   assert.equal(await preview(reopened.documentId), painted);
   assert.equal((await call("inspect", { documentId: reopened.documentId })).modified, false);
   assert.ok(!(await readdir(assets)).some((name) => name.startsWith(".libresprite-ai-")), "Temporary files leaked");
+  if (allTools) {
+    const { exerciseAllTools } = await import("./windows_mcp_cases.mjs");
+    await exerciseAllTools(call, assets, artifacts);
+  }
   await client.close(); client = undefined;
   process.kill(pid, 0); // MCP EOF leaves the editor (and any unsaved work) alive.
   await delay(150);
@@ -112,8 +136,19 @@ try {
   assert.equal(status.pid, pid);
   assert.equal(status.paused, true, "Disconnect must pause the editor before reconnect");
   await call("create", { width: 16, height: 16 }, "PAUSED");
+  if (allTools) {
+    const missing = toolCatalog.filter((name) => !successes[name.replace("libresprite_", "")]);
+    assert.deepEqual(missing, [], "Every advertised tool needs a successful real-editor call");
+    console.log(`PASS: ${toolCatalog.length}/${toolCatalog.length} advertised MCP tools; artifacts: ${artifacts}`);
+  }
+  completed = true;
   console.log("PASS: native Windows MCP launch/pipe, paused editing, PNG feedback, draw/undo/redo, Unicode/spaced paths, atomic save/overwrite, root/junction/device/stream guards, PNG/GIF/APNG export, reopen and disconnect safety.");
 } finally {
+  if (allTools) {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.resolve("build/windows-tools-report.json"), JSON.stringify({ passed: completed, headless: process.env.LIBRESPRITE_TEST_HEADLESS === "1", packageRoot, artifacts, toolCatalog, successfulCalls: successes, expectedErrors,
+      untested: toolCatalog.filter((name) => !successes[name.replace("libresprite_", "")]) }, null, 2));
+  }
   if (client) await client.close();
   // Only terminate the NEW disposable process launched by this test.
   if (pid) { try { process.kill(pid); } catch (error) { if (error.code !== "ESRCH") throw error; } }

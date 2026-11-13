@@ -78,6 +78,7 @@ jobs:
           bash scripts/build-libresprite.sh
           python -m unittest discover -s tests -v
           python scripts/smoke-test-libresprite.py
+          python scripts/test-live-bridge.py
           node scripts/test-windows-mcp.mjs
       - name: Private ephemeral package, relocated without MSYS2 on runtime PATH
         shell: msys2 {0}
@@ -87,5 +88,5 @@ jobs:
         run: |
           python scripts/package-windows.py --private-review --output 'build/packages/Windows review é'
           python 'build/packages/Windows review é/verify-package.py'
-          node scripts/test-windows-mcp.mjs 'build/packages/Windows review é'
+          node scripts/test-windows-mcp.mjs 'build/packages/Windows review é' --all-tools
       # No artifact upload/public binary distribution before the licensing/source audit.
