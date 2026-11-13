@@ -4,12 +4,13 @@ import { createServer, type Socket } from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 import { BridgeClient, BridgeError } from "../bridge-client.js";
+import { windowsPipeName } from "../endpoint.js";
 
 async function mock(handler: (request: Record<string, any>, socket: Socket) => void) {
   // Keep Unix socket paths short even on macOS's long TMPDIR.
   await mkdir(path.join(process.cwd(), ".runtime"), { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(path.join(process.cwd(), ".runtime/t-"));
-  const endpoint = path.join(directory, "s");
+  const endpoint = process.platform === "win32" ? windowsPipeName(directory) : path.join(directory, "s");
   const peers = new Set<Socket>();
   const server = createServer((socket) => {
     peers.add(socket);

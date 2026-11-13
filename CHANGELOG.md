@@ -1,5 +1,18 @@
 # Development milestones
 
+## Unreleased — experimental Windows x64 port (2026-11-12)
+
+- Native current-user-only named-pipe bridge; same protocol/tools and pause,
+  conflict, Undo and disconnect guarantees as the existing integration.
+- Windows Unicode paths, junction-aware root checks, device/alternate-stream
+  rejection and exclusive sibling temporary files with atomic no-clobber/replace.
+- UCRT64 native build, separate Windows preferences/recovery, cross-platform MCP
+  fixtures and native pipe ACL/exclusivity/backpressure/reconnect tests.
+- Standalone unsigned private-review ZIP builder with Node, transitive DLLs,
+  resources, production MCP dependencies, notices, source snapshot and checksums.
+- Windows native/MCP/relocation smoke checks; public binary redistribution remains
+  blocked on the third-party source/license audit and manual GUI review.
+
 ## 0.13.0 — Cooperative editing (unreleased draft branch, 2026-10-14)
 
 - 70 tools: lightweight readiness during gestures/pause, read-only immutable

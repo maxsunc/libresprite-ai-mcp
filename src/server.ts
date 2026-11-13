@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import { endpointError } from "./endpoint.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { BridgeClient, BridgeError, type BridgeResult } from "./bridge-client.js";
@@ -87,18 +89,24 @@ export function createServer(options: ServerOptions): { server: McpServer; close
   }, async () => {
     try {
       if (launched && launched.exitCode === null && launched.signalCode === null) throw new BridgeError("ALREADY_LAUNCHED", "An editor was already launched by this server. Connect to it instead.");
-      if (process.platform !== "darwin" && process.platform !== "linux") throw new BridgeError("UNSUPPORTED_PLATFORM", "The first live bridge supports macOS/Linux.");
-      if (Buffer.byteLength(options.socketPath) > (process.platform === "darwin" ? 103 : 107)) throw new BridgeError("INVALID_SOCKET", "Socket path is too long. Use a short private directory; run --doctor for diagnostics.");
-      const directory = path.dirname(options.socketPath);
+      if (!["darwin", "linux", "win32"].includes(process.platform)) throw new BridgeError("UNSUPPORTED_PLATFORM", "The live bridge supports macOS, Linux and Windows.");
+      const invalidEndpoint = endpointError(options.socketPath);
+      if (invalidEndpoint) throw new BridgeError("INVALID_SOCKET", invalidEndpoint);
+      const directory = process.platform === "win32"
+        ? path.join(os.tmpdir(), "libresprite-ai-logs") : path.dirname(options.socketPath);
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      const info = await lstat(directory);
-      if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()) throw new BridgeError("INVALID_SOCKET", "Socket parent must be owned by you with mode 0700.");
-      try {
-        await lstat(options.socketPath);
-        throw new BridgeError("SOCKET_EXISTS", "Endpoint already exists. Connect, or manually remove a confirmed stale endpoint; it will not be replaced.");
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      if (process.platform !== "win32") {
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()) throw new BridgeError("INVALID_SOCKET", "Socket parent must be owned by you with mode 0700.");
+        try {
+          await lstat(options.socketPath);
+          throw new BridgeError("SOCKET_EXISTS", "Endpoint already exists. Connect, or manually remove a confirmed stale endpoint; it will not be replaced.");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        }
       }
+      // Windows endpoint ownership/exclusivity is enforced by the native pipe DACL
+      // and FILE_FLAG_FIRST_PIPE_INSTANCE, not Unix file permissions.
       await mkdir(options.assetRoot, { recursive: true });
       const root = await realpath(options.assetRoot);
       // Logs must not follow symlinks or overwrite an existing file. Child stdout

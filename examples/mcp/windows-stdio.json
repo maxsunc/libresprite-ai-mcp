@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "libresprite": {
+      "command": "C:\\Tools\\LibreSprite-AI\\mcp\\runtime\\node.exe",
+      "args": ["C:\\Tools\\LibreSprite-AI\\mcp\\dist\\index.js"]
+    }
+  }
+}

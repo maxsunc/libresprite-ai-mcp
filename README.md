@@ -20,9 +20,12 @@ integration, not yet a full artist workflow.
 The native editor and live integration have been verified on **Apple Silicon
 macOS**, including undo/redo, multi-frame animations, native-file round trips,
 and independently decoded exports. Linux transport is implemented but the full
-editor workflow has not been validated here. Windows transport is not implemented.
-CI checks the MCP server and GUI-independent helpers; it does not certify native
-GUI behavior on every platform.
+editor workflow has not been validated here. **Experimental Windows x64 support**
+now includes a native named-pipe bridge, build instructions and a standalone
+private-review ZIP builder with bundled Node.js; see [the Windows guide](docs/windows.md).
+Windows smoke tests cover real MCP/editor editing and file round trips, but a full
+manual GUI review and third-party redistribution/license audit are still required.
+CI does not certify native GUI behavior on every platform.
 
 - `vendor/libresprite/`: pinned LibreSprite source, including its dependency submodules.
 - `vendor/libresprite.upstream.json`: upstream revision and dependency provenance.
@@ -38,8 +41,9 @@ The baseline is the upstream `v1.2` tag at
 
 ## Build and run
 
-You need Node.js 20+, Python 3, a C++ compiler, and the native dependencies in
-[the macOS build guide](docs/building.md). Start from a checkout:
+For Windows, follow [the UCRT64 build and portable-package guide](docs/windows.md).
+For macOS, you need Node.js 20+, Python 3, a C++ compiler, and the native dependencies
+in [the macOS build guide](docs/building.md). Start from a checkout:
 
 ```sh
 git clone https://github.com/maxsunc/libresprite-ai-mcp.git
@@ -190,7 +194,8 @@ tools never automatically close or kill a window that might hold unsaved work.
   playback. Only proven viewport pans may coexist with reads/corrections.
   Crops refuse pixel/mask loss unless explicitly authorized.
 - File access stays inside the configured asset root. The bridge is a local
-  private Unix socket, not a public network service.
+  private Unix socket (macOS/Linux) or same-user named pipe (Windows), not a public
+  network service.
 - Current bounds include 1024×1024 canvases, 256 frames, and 128 layers. Some
   operations are RGBA-only; GIF quantizes color/alpha and delay, while APNG
   preserves rendered RGBA and millisecond timing.
@@ -204,8 +209,9 @@ editing important artwork.
 The v0.9.0 Apple Silicon package was user-tested and approved on 2026-10-09.
 Downloadable binary releases and Developer ID signing/notarization remain separate
 decisions; no binary release has been published.
-The separate native-CI/Linux milestone was skipped at the user's request;
-Linux full-editor validation and Windows transport remain outside this milestone.
+The earlier native-CI/Linux milestone was skipped at the user's request.
+Linux full-editor validation remains outstanding; the new Windows port is an
+experimental, separate review effort with [its own limits](docs/windows.md).
 
 The v0.6.0 user-control, v0.7.0 animation, and v0.8.0 editing milestones were
 reviewed and approved. Run
@@ -213,8 +219,7 @@ reviewed and approved. Run
 sprites and saved before/after crop files. One native Undo restores the canvas,
 discarded pixels on all frames/layers, and selection together. See
 [the step 3 test checklist](docs/testing-v0.8.md). The approved packaging milestone
-has its own [review checklist](docs/testing-v0.9.md); no platform milestone is
-planned. The earlier
+has its own [review checklist](docs/testing-v0.9.md). The earlier
 [step 1](docs/testing-v0.6.md) and
 [step 2](docs/testing-v0.7.md) checklists and demos remain available.
 

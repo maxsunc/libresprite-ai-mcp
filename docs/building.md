@@ -4,7 +4,9 @@ The build helper now produces the modified bridge-enabled development editor.
 The baseline results below describe the original import; later native changes
 are indexed in [native-changes.md](native-changes.md). Apple Silicon macOS is the
 verified native platform. Linux transport exists but the full build/editing
-workflow is not yet validated here; Windows bridge transport is deferred.
+workflow is not yet validated here. Experimental native Windows x64 builds,
+named-pipe transport, testing and portable packaging are covered in
+[the Windows guide](windows.md).
 
 ## Upstream snapshot
 

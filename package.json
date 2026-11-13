@@ -16,7 +16,9 @@
     "test:native": "python3 scripts/smoke-test-libresprite.py",
     "test:bridge": "python3 scripts/test-live-bridge.py",
     "doctor": "node dist/index.js --doctor",
-    "package:macos": "python3 scripts/package-macos.py"
+    "package:macos": "python3 scripts/package-macos.py",
+    "package:windows": "python scripts/package-windows.py --private-review",
+    "test:windows": "npm run build && node scripts/test-windows-mcp.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",

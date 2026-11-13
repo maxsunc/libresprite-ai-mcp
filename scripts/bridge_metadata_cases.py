@@ -197,7 +197,7 @@ def test_palettes_tags_animation(client, assets, smoke):
     mutate("set_frame_duration", {"frame": 1, "durationMs": 65535})
     _, longest = exported("apng", "long.apng", frames=[1])
     assert longest["durations"] == [65535]
-    assert not list(assets.glob(".libresprite-gif-*")) and not list(directory.glob(".libresprite-export-*"))
+    assert not list(assets.glob(".libresprite-ai-*")) and not list(directory.glob(".libresprite-ai-*"))
     print("PASS: native GIF pixels/disposal/transparency/quantized timing, lossless RGBA APNG chunks/CRC/sequence/exact delays, tag playback order, once/forever, atomic file guards.")
 
     reopened = client.request("open", {"path": "metadata-assets/metadata.ase"})

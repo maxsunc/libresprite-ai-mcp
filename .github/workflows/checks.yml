@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-14, windows-2022]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
@@ -31,4 +31,61 @@ jobs:
       - name: TypeScript and MCP tests
         run: npm test
       - name: Python helpers, native APNG assembler, and repository metadata
+        if: runner.os != 'Windows'
         run: python3 -m unittest discover -s tests -v
+
+  windows-native:
+    name: Experimental Windows x64 native build and portable smoke
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-giflib
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-pixman
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-SDL2_image
+            mingw-w64-ucrt-x86_64-tinyxml2
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-libarchive
+      - name: Native editor, helper tests and real MCP smoke
+        shell: msys2 {0}
+        env:
+          LIBRESPRITE_TEST_HEADLESS: '1'
+          PYTHONUTF8: '1'
+        run: |
+          npm ci
+          npm run build
+          bash scripts/build-libresprite.sh
+          python -m unittest discover -s tests -v
+          python scripts/smoke-test-libresprite.py
+          node scripts/test-windows-mcp.mjs
+      - name: Private ephemeral package, relocated without MSYS2 on runtime PATH
+        shell: msys2 {0}
+        env:
+          LIBRESPRITE_TEST_HEADLESS: '1'
+          PYTHONUTF8: '1'
+        run: |
+          python scripts/package-windows.py --private-review --output 'build/packages/Windows review é'
+          python 'build/packages/Windows review é/verify-package.py'
+          node scripts/test-windows-mcp.mjs 'build/packages/Windows review é'
+      # No artifact upload/public binary distribution before the licensing/source audit.

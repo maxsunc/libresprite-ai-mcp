@@ -1,5 +1,6 @@
 // Clip Library
 // Copyright (C) 2020 David Capello
+// LibreSprite AI contributors: modified 2026-11-12; explicit fixed-width integer include.
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -7,6 +8,8 @@
 #ifndef CLIP_COMMON_H_INCLUDED
 #define CLIP_COMMON_H_INCLUDED
 #pragma once
+
+#include <cstdint>
 
 namespace clip {
 namespace details {

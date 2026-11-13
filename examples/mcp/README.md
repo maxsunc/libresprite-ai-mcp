@@ -15,6 +15,13 @@ available in the client's environment; use its absolute path if necessary.
 configuration locations and schemas vary: merge the server entry into the
 appropriate file rather than replacing your entire configuration.
 
+## Windows portable package
+
+[`windows-stdio.json`](windows-stdio.json) points directly at the bundled Windows
+Node runtime and server. Replace `C:\\Tools\\LibreSprite-AI` with the extracted
+folder's absolute path; no separately installed Node is needed. See
+[the Windows guide](../../docs/windows.md) for build/review limits and startup.
+
 ## OpenCode V2
 
 [`opencode.json`](opencode.json) uses V2's `mcp.servers` structure. Merge that

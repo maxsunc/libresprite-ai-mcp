@@ -1,5 +1,6 @@
 # Aseprite     | Copyright (C) 2001-2016  David Capello
 # LibreSprite  | Copyright (C)      2022  LibreSprite contributors
+# LibreSprite AI contributors: modified 2026-11-12 for Windows pipe APIs/ACL linkage.
 
 cmake_minimum_required(VERSION 3.4)
 
@@ -319,10 +320,10 @@ endif()
 if(WIN32)
   list(APPEND PLATFORM_LIBS
     kernel32 user32 gdi32 comdlg32 ole32 winmm
-    shlwapi psapi wininet comctl32 dbghelp)
+    shlwapi psapi wininet comctl32 dbghelp advapi32)
 
-  # Windows XP is the minimum supported platform.
-  add_definitions(-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
+  # The AI fork targets modern Windows; named pipes reject remote clients.
+  add_definitions(-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -DNOMINMAX)
 
   # We need Unicode support
   add_definitions(-DUNICODE -D_UNICODE)

@@ -229,7 +229,7 @@ def main():
                 (assets / "escape").symlink_to(directory, target_is_directory=True)
                 client.request("save", {**target(), "path": "escape/escape.ase"}, expected_error="PATH_OUTSIDE_ROOT")
                 client.request("open", {"path": "escape/editor.log"}, expected_error="PATH_OUTSIDE_ROOT")
-                assert not list(assets.glob(".libresprite-save-*"))
+                assert not list(assets.glob(".libresprite-ai-*"))
                 reopened = client.request("open", {"path": "roundtrip.ase"})
                 preview = client.request("render", {"documentId": reopened["documentId"], "frame": 0, "scale": 1})
                 image_path = assets / "reopened.png"

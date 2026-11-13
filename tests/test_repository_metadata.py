@@ -17,7 +17,7 @@ class RepositoryMetadataTest(unittest.TestCase):
         bridge = (ROOT / "vendor/libresprite/src/app/automation/bridge.cpp").read_text()
         self.assertIn(f'version: "{version}"', server)
         self.assertIn(f'{{"bridgeVersion", "{version}"}}', bridge)
-        self.assertIn(f"Source alpha — v{version}", (ROOT / "README.md").read_text())
+        self.assertIn(f"Source alpha — v{version}", (ROOT / "README.md").read_text(encoding="utf8"))
 
     def test_tool_catalog_matches_native_methods_and_documentation(self):
         server = (ROOT / "src/server.ts").read_text()
@@ -37,7 +37,7 @@ class RepositoryMetadataTest(unittest.TestCase):
                 self.assertIn(tool, docs)
 
     def test_full_gpl_text_matches_preserved_upstream_copy(self):
-        self.assertEqual((ROOT / "LICENSE").read_bytes(), (ROOT / "vendor/libresprite/LICENSE.txt").read_bytes())
+        self.assertEqual((ROOT / "LICENSE").read_text(encoding="utf8"), (ROOT / "vendor/libresprite/LICENSE.txt").read_text(encoding="utf8"))
         self.assertEqual(json.loads((ROOT / "package.json").read_text())["license"], "GPL-2.0-only")
 
     def test_credits_link_to_existing_license_and_provenance_files(self):
@@ -57,7 +57,12 @@ class RepositoryMetadataTest(unittest.TestCase):
         self.assertEqual(opencode["$schema"], "https://opencode.ai/config.json")
         self.assertEqual(opencode["mcp"]["servers"]["libresprite"], {"type": "local", "command": ["node", path]})
         self.assertNotIn("libresprite", opencode["mcp"])
-        for filename in ("stdio.json", "opencode.json"):
+        windows = json.loads((ROOT / "examples/mcp/windows-stdio.json").read_text())
+        self.assertEqual(windows["mcpServers"]["libresprite"], {
+            "command": r"C:\Tools\LibreSprite-AI\mcp\runtime\node.exe",
+            "args": [r"C:\Tools\LibreSprite-AI\mcp\dist\index.js"],
+        })
+        for filename in ("stdio.json", "opencode.json", "windows-stdio.json"):
             text = (ROOT / "examples/mcp" / filename).read_text()
             self.assertNotIn("/Users/", text)
             self.assertNotIn("/home/", text)

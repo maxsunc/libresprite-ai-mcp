@@ -8,11 +8,12 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../server.js";
+import { windowsPipeName } from "../endpoint.js";
 
 test("MCP tools enforce schemas, deliver image content, and report native errors", async () => {
   await mkdir(".runtime", { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(path.join(process.cwd(), ".runtime/m-"));
-  const socketPath = path.join(directory, "s");
+  const socketPath = process.platform === "win32" ? windowsPipeName(directory) : path.join(directory, "s");
   const methods: string[] = [];
   const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
   const native = netServer((socket) => {
@@ -316,7 +317,7 @@ test("MCP tools enforce schemas, deliver image content, and report native errors
 test("stdio EOF closes the native connection and exits without killing an editor", { timeout: 10_000 }, async () => {
   await mkdir(".runtime", { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(path.join(process.cwd(), ".runtime/e-"));
-  const endpoint = path.join(directory, "s");
+  const endpoint = process.platform === "win32" ? windowsPipeName(directory) : path.join(directory, "s");
   let connected!: () => void;
   let disconnected!: () => void;
   const connection = new Promise<void>((resolve) => { connected = resolve; });

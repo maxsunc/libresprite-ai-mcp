@@ -8,6 +8,7 @@ import os from "node:os";
 import { BridgeClient } from "./bridge-client.js";
 import type { ServerOptions } from "./server.js";
 import { inspectMachO } from "./macho.js";
+import { endpointError } from "./endpoint.js";
 
 const exec = promisify(execFile);
 type Check = { name: string; status: "ok" | "warning" | "error"; detail: string };
@@ -16,19 +17,22 @@ export async function diagnose(options: ServerOptions, connect = false): Promise
   const checks: Check[] = [];
   const add = (name: string, status: Check["status"], detail: string) => checks.push({ name, status, detail });
   add("node", Number(process.versions.node.split(".")[0]) >= 20 ? "ok" : "error", process.version);
-  add("platform", process.platform === "darwin" && process.arch === "arm64" ? "ok" : "warning",
-    `${process.platform}/${process.arch}; packaged editor requires Apple Silicon macOS (not Rosetta Node).`);
+  const windows = process.platform === "win32";
+  add("platform", (process.platform === "darwin" && process.arch === "arm64") || (windows && process.arch === "x64") ? "ok" : "warning",
+    `${process.platform}/${process.arch}; review packages target Apple Silicon macOS or Windows x64; Windows support is experimental.`);
   try {
     await access(options.executable, constants.X_OK);
     // Upstream initializes user preferences/palettes even for --version. Never
     // execute an editor just to diagnose it; inspect the bundle and load commands.
     add("executable", "ok", `${options.executable} (accessible; not executed)`);
   } catch (error) { add("executable", "error", `${options.executable}: ${String(error)}. Check the configured executable path/permissions.`); }
-  const resources = path.resolve(path.dirname(options.executable), "../Resources");
+  const resources = windows ? path.dirname(options.executable) : path.resolve(path.dirname(options.executable), "../Resources");
   try {
-    const manifest = JSON.parse(await readFile(path.join(resources, "package-manifest.json"), "utf8")) as { version: string; minimumMacOS: string };
+    const manifest = JSON.parse(await readFile(path.join(resources, "package-manifest.json"), "utf8")) as { version: string; minimumMacOS: string; platform?: string };
     await access(path.join(resources, "data/gui.xml"));
-    add("resources", manifest.version === "0.13.0" ? "ok" : "error", `Package ${manifest.version}; macOS ${manifest.minimumMacOS}+; ${resources}`);
+    add("resources", manifest.version === "0.13.0" && (!windows || manifest.platform === "win32-x64") ? "ok" : "error",
+      `Package ${manifest.version}; ${windows ? manifest.platform : `macOS ${manifest.minimumMacOS}+`}; ${resources}`);
+    if (windows) add("signature", "warning", "Experimental unsigned Windows package; only run a package you trust.");
     if (process.platform === "darwin") {
       const { stdout } = await exec("/usr/bin/sw_vers", ["-productVersion"]);
       const actual = stdout.trim().split(".").map(Number), needed = manifest.minimumMacOS.split(".").map(Number);
@@ -59,19 +63,23 @@ export async function diagnose(options: ServerOptions, connect = false): Promise
     try { await access(developmentData); add("resources", "warning", "Development layout (not an app package); native build dependencies required."); }
     catch { add("resources", "error", String(error)); }
   }
-  const maxBytes = process.platform === "darwin" ? 103 : 107;
-  add("socket-path", Buffer.byteLength(options.socketPath) <= maxBytes ? "ok" : "error", `${options.socketPath} (${Buffer.byteLength(options.socketPath)}/${maxBytes} bytes)`);
-  try {
-    const directory = await lstat(path.dirname(options.socketPath));
-    const safe = directory.isDirectory() && !directory.isSymbolicLink() && (directory.mode & 0o077) === 0 && directory.uid === process.getuid?.();
-    add("socket-directory", safe ? "ok" : "error", safe ? "Owned by you, mode 0700." : "Requires a real directory owned by you with mode 0700; do not chmod unrelated directories.");
-  } catch (error) {
-    add("socket-directory", (error as NodeJS.ErrnoException).code === "ENOENT" ? "warning" : "error", "Not available; launch creates a private directory. No files were changed by diagnostics.");
+  const invalidEndpoint = endpointError(options.socketPath);
+  add("socket-path", invalidEndpoint ? "error" : "ok", invalidEndpoint ?? options.socketPath);
+  if (windows) {
+    add("socket", "warning", "Local named pipe; the editor enforces a current-user-only ACL, rejects remote clients and refuses an occupied name. Use --connect to check a running bridge.");
+  } else {
+    try {
+      const directory = await lstat(path.dirname(options.socketPath));
+      const safe = directory.isDirectory() && !directory.isSymbolicLink() && (directory.mode & 0o077) === 0 && directory.uid === process.getuid?.();
+      add("socket-directory", safe ? "ok" : "error", safe ? "Owned by you, mode 0700." : "Requires a real directory owned by you with mode 0700; do not chmod unrelated directories.");
+    } catch (error) {
+      add("socket-directory", (error as NodeJS.ErrnoException).code === "ENOENT" ? "warning" : "error", "Not available; launch creates a private directory. No files were changed by diagnostics.");
+    }
+    try {
+      const endpoint = await lstat(options.socketPath);
+      add("socket", endpoint.isSocket() && (endpoint.mode & 0o077) === 0 && endpoint.uid === process.getuid?.() ? "ok" : "error", "Endpoint exists. Launch will never replace it; connect, or investigate a confirmed stale socket manually.");
+    } catch (error) { add("socket", (error as NodeJS.ErrnoException).code === "ENOENT" ? "warning" : "error", "No endpoint; launch a NEW editor with libresprite_launch."); }
   }
-  try {
-    const endpoint = await lstat(options.socketPath);
-    add("socket", endpoint.isSocket() && (endpoint.mode & 0o077) === 0 && endpoint.uid === process.getuid?.() ? "ok" : "error", "Endpoint exists. Launch will never replace it; connect, or investigate a confirmed stale socket manually.");
-  } catch (error) { add("socket", (error as NodeJS.ErrnoException).code === "ENOENT" ? "warning" : "error", "No endpoint; launch a NEW editor with libresprite_launch."); }
   try {
     const info = await lstat(options.assetRoot);
     await access(options.assetRoot, constants.R_OK | constants.W_OK | constants.X_OK);
@@ -86,6 +94,9 @@ export async function diagnose(options: ServerOptions, connect = false): Promise
     finally { bridge.close(); }
     add("disconnect", "warning", "Explicit diagnostic connection closed: the editor pauses on disconnect. It was never resumed or edited.");
   }
-  add("preferences", "ok", path.join(os.homedir(), "Library/Application Support/LibreSprite AI MCP (packaged app only)"));
+  add("preferences", "ok", windows
+    ? path.join(process.env.APPDATA ?? os.homedir(), "LibreSprite AI")
+    : process.platform === "darwin" ? path.join(os.homedir(), "Library/Application Support/LibreSprite AI MCP (packaged app only)")
+    : "Linux development editor uses the upstream LibreSprite profile unless LIBRESPRITE_USER_DIR is set.");
   return { checks, ok: !checks.some((check) => check.status === "error") };
 }

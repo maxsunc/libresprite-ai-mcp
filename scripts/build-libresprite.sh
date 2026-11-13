@@ -24,6 +24,16 @@ options=(
   "-DCMAKE_CXX_FLAGS=$prefix_map"
 )
 
+case "$(uname -s)" in
+  MINGW*|MSYS*)
+    if [[ "${MSYSTEM:-}" != UCRT64 ]]; then
+      echo "Build Windows x64 from an MSYS2 UCRT64 shell. See docs/windows.md." >&2
+      exit 1
+    fi
+    options+=("-DCMAKE_PREFIX_PATH=$MINGW_PREFIX")
+    ;;
+esac
+
 if [[ "$(uname -s)" == Darwin ]]; then
   if ! command -v brew >/dev/null 2>&1; then
     echo "Homebrew is required by the upstream macOS build. See docs/building.md." >&2

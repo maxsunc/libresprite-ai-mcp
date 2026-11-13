@@ -11,9 +11,10 @@
 // Updated 2026-10-11: read-only raw-value/alpha masks and seeded connected components.
 // Updated 2026-10-11: guarded atomic raw-region/PNG stamping with source snapshots.
 // Updated 2026-10-14: cooperative readiness, proven view-only panning and guarded edit tickets.
+// Updated 2026-11-12: Windows named pipes and cross-platform safe file publication/paths.
 #include "app/automation/bridge.h"
 
-#if defined(__APPLE__) || defined(__linux__)
+#if defined(__APPLE__) || defined(__linux__) || defined(_WIN32)
 #include "app/app.h"
 #include "app/automation/apng.h"
 #include "app/automation/animation_analysis.h"
@@ -105,11 +106,20 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include "app/automation/platform_files.h"
+#include "app/automation/windows_pipe.h"
+#ifdef _WIN32
+#undef IMAGE_BITMAP
+#undef DIFFERENCE
+#undef TRANSPARENT
+#endif
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 
 namespace app {
 namespace {
@@ -203,6 +213,7 @@ private:
   bool m_maskVisible;
   Transformation m_transformation;
 };
+#ifndef _WIN32
 void nonblocking(int fd) {
   if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
     throw std::runtime_error("Cannot configure automation socket.");
@@ -221,6 +232,7 @@ bool sameUser(int fd) {
   return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) == 0 && peer.uid == getuid();
 #endif
 }
+#endif
 void uiIdle(bool allowPanning = false) {
   auto manager = ui::Manager::getDefault();
   auto foreground = manager->getForegroundWindow();
@@ -245,8 +257,11 @@ Json summary(Document* document) {
 class AutomationBridge::Impl {
 public:
   Impl(const std::string& path, const std::string& root) : m_path(path), m_timer(16) {
-    require(!root.empty() && fs::is_directory(root), "INVALID_ROOT", "--automation-root must name an existing directory.");
-    m_root = fs::canonical(root);
+    require(!root.empty() && fs::is_directory(fs::u8path(root)), "INVALID_ROOT", "--automation-root must name an existing directory.");
+    m_root = automation::canonicalPath(fs::u8path(root));
+#ifdef _WIN32
+    m_pipe.reset(new automation::WindowsPipe(path));
+#else
     require(fs::path(path).is_absolute(), "INVALID_SOCKET", "Socket path must be absolute.");
     struct stat parent;
     require(lstat(fs::path(path).parent_path().c_str(), &parent) == 0 && S_ISDIR(parent.st_mode) && parent.st_uid == getuid() && (parent.st_mode & 0077) == 0,
@@ -259,11 +274,14 @@ public:
     require(!fs::exists(fs::symlink_status(path)), "SOCKET_EXISTS", "Socket already exists. Choose another endpoint or remove a confirmed stale socket.");
     m_listener = socket(AF_UNIX, SOCK_STREAM, 0);
     require(m_listener >= 0, "IO_ERROR", "Cannot create automation socket.");
+#endif
     try {
+#ifndef _WIN32
       nonblocking(m_listener);
       require(bind(m_listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "IO_ERROR", "Cannot bind automation socket.");
       m_bound = true;
       require(chmod(path.c_str(), 0600) == 0 && listen(m_listener, 1) == 0, "IO_ERROR", "Cannot secure/listen on automation socket.");
+#endif
       std::random_device random;
       std::ostringstream session;
       for (int i = 0; i < 4; ++i) session << std::hex << std::setw(8) << std::setfill('0') << random();
@@ -283,8 +301,10 @@ public:
       m_timer.start();
     } catch (...) {
       removeControl();
+#ifndef _WIN32
       close(m_listener);
       if (m_bound) unlink(m_path.c_str());
+#endif
       throw;
     }
   }
@@ -292,8 +312,10 @@ public:
     m_timer.stop();
     disconnect();
     removeControl();
+#ifndef _WIN32
     if (m_listener >= 0) close(m_listener);
     if (m_bound) unlink(m_path.c_str());
+#endif
   }
 private:
   struct Cached { std::string id, request, response; };
@@ -301,7 +323,12 @@ private:
   std::string m_path, m_session, m_input, m_output;
   fs::path m_root;
   ui::Timer m_timer;
-  int m_listener = -1, m_client = -1;
+#ifdef _WIN32
+  std::unique_ptr<automation::WindowsPipe> m_pipe;
+#else
+  int m_listener = -1;
+#endif
+  int m_client = -1;
   bool m_bound = false, m_paused = true, m_pausedByUser = false;
   std::unique_ptr<ui::Button> m_control;
   size_t m_sent = 0, m_cacheBytes = 0;
@@ -345,7 +372,11 @@ private:
     updateControl();
   }
   void disconnect() {
+#ifdef _WIN32
+    if (m_client >= 0) m_pipe->disconnect();
+#else
     if (m_client >= 0) close(m_client);
+#endif
     m_client = -1;
     m_input.clear(); m_output.clear(); m_sent = 0;
     m_prepared.clear(); // No delayed edit capability survives disconnect.
@@ -356,17 +387,25 @@ private:
   void tick() noexcept {
     try {
       if (m_client < 0) {
+#ifdef _WIN32
+        if (!m_pipe->accept()) return;
+        m_client = 0;
+#else
         int fd = accept(m_listener, nullptr, nullptr);
         if (fd < 0) return;
         if (!sameUser(fd)) { close(fd); return; }
         try { nonblocking(fd); } catch (...) { close(fd); throw; }
-        m_client = fd; m_progress = Clock::now();
+        m_client = fd;
+#endif
+        m_progress = Clock::now();
         updateControl();
       }
       if ((!m_input.empty() || !m_output.empty()) && Clock::now() - m_progress > std::chrono::seconds(5)) { disconnect(); return; }
       if (!m_output.empty()) {
         size_t amount = std::min(size_t(256 * 1024), m_output.size() - m_sent);
-#ifdef __linux__
+#ifdef _WIN32
+        auto count = m_pipe->write(m_output.data() + m_sent, amount);
+#elif defined(__linux__)
         auto count = send(m_client, m_output.data() + m_sent, amount, MSG_NOSIGNAL);
 #else
         auto count = send(m_client, m_output.data() + m_sent, amount, 0);
@@ -374,15 +413,27 @@ private:
         if (count > 0) {
           m_sent += size_t(count); m_progress = Clock::now();
           if (m_sent == m_output.size()) { m_output.clear(); m_sent = 0; }
-        } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) disconnect();
+        }
+#ifndef _WIN32
+        else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) disconnect();
+#endif
         return;
       }
       char buffer[16384];
       for (int i = 0; i < 16 && m_input.find('\n') == std::string::npos; ++i) {
+#ifdef _WIN32
+        auto count = m_pipe->read(buffer, sizeof(buffer));
+#else
         auto count = recv(m_client, buffer, sizeof(buffer), 0);
+#endif
         if (count > 0) { m_input.append(buffer, size_t(count)); m_progress = Clock::now(); }
         else if (count == 0) { disconnect(); return; }
-        else { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) disconnect(); break; }
+        else {
+#ifndef _WIN32
+          if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) disconnect();
+#endif
+          break;
+        }
       }
       if (m_input.size() > MaxRequest) { disconnect(); return; }
       auto end = m_input.find('\n');
@@ -571,14 +622,14 @@ private:
     return {{"closedDocumentId", id}, {"lastRevision", lastRevision}, {"activeDocumentId", ctx->activeDocument() ? Json(ctx->activeDocument()->id()) : Json(nullptr)}, {"sessionId", m_session}};
   }
   fs::path filePath(const Json& params, bool saving) {
-    fs::path input(text(params, "path"));
-    require(!input.is_absolute(), "PATH_OUTSIDE_ROOT", "Use a path relative to the configured asset root.");
+    auto input = fs::u8path(text(params, "path"));
+    require(automation::validRelativeAssetPath(input), "PATH_OUTSIDE_ROOT", "Use a normal file path relative to the configured asset root (no drive, device or alternate stream paths).");
     auto candidate = m_root / input;
-    auto parent = fs::canonical(candidate.parent_path());
-    auto resolved = saving ? parent / candidate.filename() : fs::canonical(candidate);
+    auto parent = automation::canonicalPath(candidate.parent_path());
+    auto resolved = saving ? parent / candidate.filename() : automation::canonicalPath(candidate);
     auto relative = resolved.lexically_relative(m_root);
     require(!relative.empty() && *relative.begin() != "..", "PATH_OUTSIDE_ROOT", "Path escapes the configured asset root.");
-    if (saving) require(!fs::is_symlink(fs::symlink_status(candidate)), "INVALID_PATH", "Refusing to save through a symlink.");
+    if (saving) require(!automation::isLink(candidate), "INVALID_PATH", "Refusing to save through a symlink.");
     return resolved;
   }
   bool supportedAsset(const fs::path& path) {
@@ -587,7 +638,7 @@ private:
   std::unique_ptr<Document> loadAsset(const fs::path& path) {
     require(fs::is_regular_file(path) && fs::file_size(path) <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Open requires a regular file of at most 32 MiB.");
     require(supportedAsset(path), "UNSUPPORTED_FORMAT", "Opening currently supports native sprites and PNG.");
-    std::unique_ptr<FileOp> operation(FileOp::createLoadDocumentOperation(nullptr, path.c_str(), FILE_LOAD_SEQUENCE_NONE));
+    std::unique_ptr<FileOp> operation(FileOp::createLoadDocumentOperation(nullptr, automation::utf8Path(path).c_str(), FILE_LOAD_SEQUENCE_NONE));
     require(operation && !operation->hasError(), "OPEN_FAILED", operation ? operation->error() : "Cannot create native load operation.");
     operation->operate(); operation->done();
     require(!operation->hasError() && operation->document(), "OPEN_FAILED", operation->hasError() ? operation->error() : "File did not produce a document.");
@@ -609,10 +660,10 @@ private:
       require(++scanned <= 4096, "LIMIT_EXCEEDED", "Directory has more than 4096 entries. Browse a smaller subdirectory.");
       auto status = entry.symlink_status();
       // Browsing never follows links (including in-root links) or special files.
-      if (fs::is_symlink(status)) continue;
+      if (automation::isLink(entry.path())) continue;
       bool folder = fs::is_directory(status);
       if (!folder && !(fs::is_regular_file(status) && supportedAsset(entry.path()))) continue;
-      Json item = {{"path", entry.path().lexically_relative(m_root).generic_string()}, {"name", entry.path().filename().string()}, {"type", folder ? "directory" : "asset"}};
+      Json item = {{"path", automation::utf8Path(entry.path().lexically_relative(m_root))}, {"name", automation::utf8Path(entry.path().filename())}, {"type", folder ? "directory" : "asset"}};
       if (!folder) { item["bytes"] = entry.file_size(); item["format"] = entry.path().extension().string().substr(1); }
       entries.push_back(item);
     }
@@ -624,7 +675,7 @@ private:
     Json page = Json::array();
     size_t end = std::min(entries.size(), size_t(offset + limit));
     for (size_t i = size_t(offset); i < end; ++i) page.push_back(entries[i]);
-    return {{"path", directory.lexically_relative(m_root).generic_string()}, {"entries", page}, {"total", entries.size()}, {"nextOffset", end < entries.size() ? Json(end) : Json(nullptr)}, {"sessionId", m_session}};
+    return {{"path", automation::utf8Path(directory.lexically_relative(m_root))}, {"entries", page}, {"total", entries.size()}, {"nextOffset", end < entries.size() ? Json(end) : Json(nullptr)}, {"sessionId", m_session}};
   }
   ImageRef composite(Sprite* sprite, frame_t frame, const render::OnionskinOptions* onions = nullptr) {
     ImageRef image(Image::create(IMAGE_RGB, sprite->width(), sprite->height()));
@@ -806,7 +857,7 @@ private:
     require(size_t(sprite->width()) * sprite->height() * scale * scale <= MaxPixels, "LIMIT_EXCEEDED", "Preview exceeds 1,048,576 output pixels. Use a smaller scale.");
     auto result = summary(document.get());
     result.erase("documentId"); result.erase("name"); result.erase("modified");
-    result["path"] = path.lexically_relative(m_root).generic_string();
+    result["path"] = automation::utf8Path(path.lexically_relative(m_root));
     result["frame"] = frame; result["scale"] = scale;
     result["outputWidth"] = sprite->width() * scale; result["outputHeight"] = sprite->height() * scale;
     result["durationMs"] = sprite->frameDuration(frame); result["sessionId"] = m_session;
@@ -941,29 +992,14 @@ private:
   }
   void publishExport(const fs::path& path, const std::vector<uint8_t>& bytes, bool overwrite) {
     auto status = fs::symlink_status(path);
-    require(!fs::is_symlink(status) && !fs::is_directory(status), "INVALID_PATH", "Refusing to export over a symlink or directory.");
+    require(!automation::isLink(path) && !fs::is_directory(status), "INVALID_PATH", "Refusing to export over a symlink or directory.");
     require(overwrite || !fs::exists(status), "FILE_EXISTS", "Destination exists; explicitly allow overwrite or choose another filename.");
-    std::string pattern = (path.parent_path() / ".libresprite-export-XXXXXX").string();
-    std::vector<char> temporary(pattern.begin(), pattern.end()); temporary.push_back('\0');
-    int fd = mkstemp(temporary.data());
-    require(fd >= 0, "IO_ERROR", "Cannot create temporary export file.");
-    try {
-      size_t written = 0;
-      while (written < bytes.size()) {
-        auto count = write(fd, bytes.data() + written, bytes.size() - written);
-        if (count < 0 && errno == EINTR) continue;
-        require(count > 0, "IO_ERROR", "Cannot write export.");
-        written += size_t(count);
-      }
-      int closeResult = close(fd); fd = -1;
-      require(closeResult == 0, "IO_ERROR", "Cannot finish export.");
-      if (overwrite) fs::rename(temporary.data(), path);
-      else {
-        auto published = link(temporary.data(), path.c_str());
-        require(published == 0, errno == EEXIST ? "FILE_EXISTS" : "IO_ERROR", "Could not publish export; destination may have appeared during export.");
-        unlink(temporary.data());
-      }
-    } catch (...) { if (fd >= 0) close(fd); unlink(temporary.data()); throw; }
+    automation::TemporaryFile temporary(path.parent_path());
+    temporary.writeAll(bytes);
+    auto published = temporary.publish(path, overwrite);
+    require(published == automation::PublishResult::ok,
+      published == automation::PublishResult::exists ? "FILE_EXISTS" : "IO_ERROR",
+      "Could not publish export; destination may have appeared during export.");
   }
   Json exportPng(Document* document, const Json& params, bool sheet) {
     auto path = filePath(params, true);
@@ -983,7 +1019,7 @@ private:
       result["outputWidth"] = document->sprite()->width() * scale; result["outputHeight"] = document->sprite()->height() * scale;
       bytes = encodePng(composite(document->sprite(), frame).get(), scale);
     }
-    result["path"] = path.lexically_relative(m_root).generic_string(); result["bytes"] = bytes.size();
+    result["path"] = automation::utf8Path(path.lexically_relative(m_root)); result["bytes"] = bytes.size();
     // Prepare/check the entire result before any file-system side effect.
     require(result.dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Export metadata exceeds the bridge limit.");
     publishExport(path, bytes, overwrite);
@@ -1177,24 +1213,19 @@ private:
   std::vector<uint8_t> encodeGif(Sprite* sprite, bool loop) {
     std::unique_ptr<Document> detached(new Document(sprite));
     detached->setFormatOptions(base::SharedPtr<FormatOptions>(new GifOptions(false, loop)));
-    std::string pattern = (m_root / ".libresprite-gif-XXXXXX.gif").string();
-    std::vector<char> temporary(pattern.begin(), pattern.end()); temporary.push_back('\0');
-    int fd = mkstemps(temporary.data(), 4);
-    require(fd >= 0, "IO_ERROR", "Cannot create native GIF encoding file."); close(fd);
-    try {
-      std::unique_ptr<FileOp> operation(FileOp::createSaveDocumentOperation(nullptr, detached.get(), temporary.data(), ""));
-      require(operation && !operation->hasError(), "EXPORT_FAILED", operation ? operation->error() : "Cannot create native GIF save operation.");
-      operation->operate(); operation->done();
-      require(!operation->hasError(), "EXPORT_FAILED", operation->error());
-      auto size = fs::file_size(temporary.data());
-      require(size > 0 && size <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Encoded GIF exceeds the 32 MiB file limit.");
-      std::ifstream input(temporary.data(), std::ios::binary);
-      std::vector<uint8_t> bytes(size);
-      input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
-      require(bool(input), "IO_ERROR", "Cannot read native GIF output.");
-      unlink(temporary.data());
-      return bytes;
-    } catch (...) { unlink(temporary.data()); throw; }
+    automation::TemporaryFile temporary(m_root, ".gif");
+    temporary.finish();
+    std::unique_ptr<FileOp> operation(FileOp::createSaveDocumentOperation(nullptr, detached.get(), temporary.name().c_str(), ""));
+    require(operation && !operation->hasError(), "EXPORT_FAILED", operation ? operation->error() : "Cannot create native GIF save operation.");
+    operation->operate(); operation->done();
+    require(!operation->hasError(), "EXPORT_FAILED", operation->error());
+    auto size = fs::file_size(temporary.path());
+    require(size > 0 && size <= 32 * 1024 * 1024, "LIMIT_EXCEEDED", "Encoded GIF exceeds the 32 MiB file limit.");
+    std::ifstream input(temporary.path(), std::ios::binary);
+    std::vector<uint8_t> bytes(size);
+    input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+    require(bool(input), "IO_ERROR", "Cannot read native GIF output.");
+    return bytes;
   }
   Json exportAnimation(Document* document, const Json& params) {
     auto path = filePath(params, true);
@@ -1246,7 +1277,7 @@ private:
       catch (const std::length_error& error) { throw BridgeError("LIMIT_EXCEEDED", error.what()); }
       catch (const std::runtime_error& error) { throw BridgeError("EXPORT_FAILED", error.what()); }
     }
-    result["path"] = path.lexically_relative(m_root).generic_string(); result["bytes"] = bytes.size();
+    result["path"] = automation::utf8Path(path.lexically_relative(m_root)); result["bytes"] = bytes.size();
     require(result.dump().size() < MaxResponse - 4096, "LIMIT_EXCEEDED", "Animation metadata exceeds the bridge limit.");
     publishExport(path, bytes, overwrite);
     return result;
@@ -2047,7 +2078,7 @@ private:
       require(layer && layer->isImage() && sourceSprite->totalFrames() == 1 && sourceSprite->countLayers() == 1,
               "UNSUPPORTED_FORMAT", "PNG stamp must decode to one native image layer/frame.");
       sourceTarget = {layer, 0, layer->cel(0)};
-      sourceInfo["path"] = path.lexically_relative(m_root).generic_string();
+      sourceInfo["path"] = automation::utf8Path(path.lexically_relative(m_root));
     } else sourceTarget = rawTarget(sprite, source);
     require(bool(sourceTarget.cel), "CEL_NOT_FOUND", "A stamp source cel must exist; a missing cel is not permission to erase destinations.");
     require(!(sourceTarget.cel->bounds() & sourceArea).isEmpty(), "OUTSIDE_CEL", "Source rectangle must intersect stored cel data.");
@@ -2711,22 +2742,17 @@ private:
     bool overwrite = params.value("overwrite", false);
     require(overwrite || !fs::exists(path), "FILE_EXISTS", "Destination exists; explicitly allow overwrite or choose another filename.");
     // Encode to a unique sibling first. Failed saves never corrupt the target.
-    std::string pattern = (path.parent_path() / ".libresprite-save-XXXXXX.ase").string();
-    std::vector<char> temporary(pattern.begin(), pattern.end()); temporary.push_back('\0');
-    int fd = mkstemps(temporary.data(), 4);
-    require(fd >= 0, "IO_ERROR", "Cannot create temporary save file."); close(fd);
-    try {
-      std::unique_ptr<FileOp> operation(FileOp::createSaveDocumentOperation(nullptr, document, temporary.data(), ""));
-      require(operation && !operation->hasError(), "SAVE_FAILED", operation ? operation->error() : "Cannot create native save operation.");
-      operation->operate(); operation->done();
-      require(!operation->hasError(), "SAVE_FAILED", operation->error());
-      if (overwrite) fs::rename(temporary.data(), path);
-      else {
-        require(link(temporary.data(), path.c_str()) == 0, "FILE_EXISTS", "Destination appeared during saving, or could not be published.");
-        unlink(temporary.data());
-      }
-    } catch (...) { unlink(temporary.data()); throw; }
-    document->setFilename(path.string()); document->markAsSaved();
+    automation::TemporaryFile temporary(path.parent_path(), ".ase");
+    temporary.finish();
+    std::unique_ptr<FileOp> operation(FileOp::createSaveDocumentOperation(nullptr, document, temporary.name().c_str(), ""));
+    require(operation && !operation->hasError(), "SAVE_FAILED", operation ? operation->error() : "Cannot create native save operation.");
+    operation->operate(); operation->done();
+    require(!operation->hasError(), "SAVE_FAILED", operation->error());
+    auto published = temporary.publish(path, overwrite);
+    require(published == automation::PublishResult::ok,
+      published == automation::PublishResult::exists ? "FILE_EXISTS" : "IO_ERROR",
+      "Destination appeared during saving, or could not be published.");
+    document->setFilename(automation::utf8Path(path)); document->markAsSaved();
     App::instance()->updateDisplayTitleBar();
   }
   Json dispatch(const std::string& method, const Json& params) {
@@ -2742,7 +2768,13 @@ private:
       "crop_canvas", "duplicate_layer", "reparent_layer", "draw_brush_stroke", "set_indexed_pixels", "set_polygon_selection",
       "set_bitmap_selection", "render_frame_diff", "render_layer", "analyze_animation", "edit_pixels", "translate_regions", "read_pixels", "extract_mask", "stamp_region", "interaction_state", "prepare_edit", "apply_edit"};
     require(std::find(methods.begin(), methods.end(), method) != methods.end(), "METHOD_NOT_FOUND", "Unknown bridge method.");
-    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.13.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", m_root.string()}, {"pid", getpid()}};
+    if (method == "status") return {{"protocolVersion", 1}, {"bridgeVersion", "0.13.0"}, {"methods", methods}, {"sessionId", m_session}, {"connected", m_client >= 0}, {"paused", m_paused}, {"pausedByUser", m_pausedByUser}, {"controlText", m_control ? m_control->text() : ""}, {"assetRoot", automation::utf8Path(m_root)}, {"pid",
+#ifdef _WIN32
+      GetCurrentProcessId()
+#else
+      getpid()
+#endif
+      }};
     require(text(params, "sessionId", 128) == m_session, "SESSION_MISMATCH", "This request belongs to a different editor process.");
     if (method == "interaction_state") return interactionState(params);
     if (method == "set_paused") {
@@ -2954,7 +2986,7 @@ AutomationBridge::~AutomationBridge() = default;
 namespace app {
 class AutomationBridge::Impl {};
 AutomationBridge::AutomationBridge(const std::string&, const std::string&) {
-  throw std::runtime_error("The automation bridge currently supports macOS and Linux only.");
+  throw std::runtime_error("The automation bridge supports macOS, Linux and Windows only.");
 }
 AutomationBridge::~AutomationBridge() = default;
 }

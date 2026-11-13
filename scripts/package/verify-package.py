@@ -11,7 +11,7 @@ def verify(root):
     root = root.resolve()
     manifest = json.loads((root / "checksums.json").read_text())
     expected = set(manifest["files"]) | set(manifest["symlinks"]) | {"checksums.json"}
-    actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() or p.is_symlink()}
+    actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() or p.is_symlink()}
     # Finder metadata is not package content; it may appear after extraction.
     actual = {p for p in actual if Path(p).name != ".DS_Store" and not Path(p).name.startswith("._")}
     if actual != expected:
