@@ -136,6 +136,28 @@ These steps use Pi's built-in MCP support. An extension that replaces `/mcp`
 may use a different configuration; remove that replacement to use these steps.
 Start with copies of artwork: the agent can edit and save inside its asset root.
 
+### Pixel-animation workflow skill
+
+The project includes [`pixel-animation`](.pi/skills/pixel-animation/SKILL.md), a
+Pi skill for rough key poses, timed blocking, evidence-based review, and up to
+three autonomous correction passes before final human review. Reviewer subagents
+are optional and read-only; the main agent remains the only editor. The skill
+requires LibreSprite MCP and image-capable review, not a new server feature.
+It distinguishes still-image/timing inspection from actual playback assessment
+and does not promise automatic animation quality.
+
+When running Pi from this checkout, run `/reload`, then invoke it explicitly:
+
+```text
+/skill:pixel-animation Create a 64x64 skeleton mage staff-slam animation.
+```
+
+To use it from other projects, copy the `pixel-animation` directory to
+`~/.pi/agent/skills/` (Windows: `%USERPROFILE%\.pi\agent\skills\`), then run
+`/reload`. Other Agent Skills-compatible clients can load the same `SKILL.md`
+using their own skill configuration. Installing the skill does not install or
+configure LibreSprite MCP.
+
 ## Windows x64 portable review package
 
 The Windows package keeps `LibreSprite-AI.exe`, its DLLs/resources, and a
