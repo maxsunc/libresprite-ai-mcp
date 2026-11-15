@@ -10,6 +10,16 @@ this bridge. Review-package builders are available for Apple Silicon macOS and
 Windows x64. No public binary releases are published; Windows packages remain
 private-review-only pending a third-party license/corresponding-source audit.
 
+## Examples
+
+### Skeleton mage staff slam
+
+**gpt-6.1-sol + animation skill used**
+
+![Skeleton mage performing a two-handed staff slam](examples/animations/skeleton-mage-staff-slam.gif)
+
+64×64 transparent sprite, 16 frames. The preview repeats; the action is a one-shot.
+
 ## Current scope
 
 The reproducible native baseline and live bridge/MCP integration are implemented,
