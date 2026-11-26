@@ -105,7 +105,11 @@ def build(output, prefix, node, node_license):
         (mcp / "package-layout.json").write_text(json.dumps({"layout": 1, "version": version, "platform": "win32-x64"}))
         for name in ("start-mcp.cmd", "doctor.cmd"):
             shutil.copyfile(ROOT / "scripts/package" / name, stage / name)
-        shutil.copyfile(ROOT / "docs/windows.md", stage / "START-HERE.md")
+        shutil.copyfile(ROOT / "scripts/package/START-HERE-WINDOWS.md", stage / "START-HERE.md")
+        shutil.copytree(ROOT / "docs", stage / "docs")
+        shutil.copytree(ROOT / "examples/mcp", stage / "examples")
+        shutil.copytree(ROOT / ".agents/skills", stage / ".agents/skills")
+        shutil.copyfile(ROOT / "AGENTS.md", stage / "AGENTS.md")
         licenses = stage / "licenses"
         licenses.mkdir()
         for name in ("LICENSE", "CREDITS.md"):

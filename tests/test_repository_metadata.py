@@ -49,6 +49,19 @@ class RepositoryMetadataTest(unittest.TestCase):
             with self.subTest(link=link):
                 self.assertTrue((ROOT / link).is_file(), link)
 
+    def test_shared_skill_and_onboarding_have_no_pi_only_source_path(self):
+        skill = ROOT / ".agents/skills/pixel-animation/SKILL.md"
+        self.assertTrue(skill.is_file())
+        self.assertFalse((ROOT / ".pi/skills/pixel-animation/SKILL.md").exists())
+        self.assertIn("name: pixel-animation", skill.read_text(encoding="utf8"))
+        self.assertIn(".agents/skills/pixel-animation/SKILL.md", (ROOT / "AGENTS.md").read_text(encoding="utf8"))
+        self.assertIn(".agents/skills/pixel-animation/SKILL.md", (ROOT / "README.md").read_text(encoding="utf8"))
+        self.assertIn("npm run setup", (ROOT / "README.md").read_text(encoding="utf8"))
+        for name in ("START-HERE.md", "START-HERE-WINDOWS.md"):
+            guide = (ROOT / "scripts/package" / name).read_text(encoding="utf8")
+            self.assertIn("--setup", guide)
+            self.assertIn("docs/setup.md", guide)
+
     def test_client_examples_are_portable_and_use_documented_shapes(self):
         standard = json.loads((ROOT / "examples/mcp/stdio.json").read_text())
         opencode = json.loads((ROOT / "examples/mcp/opencode.json").read_text())

@@ -46,6 +46,8 @@ libresprite-ai-mcp-0.12.0-macos-arm64/
     start-mcp.sh
     doctor.sh
   sources/                      # exact project snapshot, FreeType/LZ4, recipes/manifest
+  .agents/skills/pixel-animation/SKILL.md  # shared skill + MCP resource content
+  AGENTS.md                      # agent-neutral onboarding
   docs/
   examples/                     # source-build client templates; adapt command below
   START-HERE.md
@@ -82,7 +84,14 @@ and user resources live under `~/Library/Application Support/LibreSprite AI MCP/
 The unbundled development build retains its upstream preference directory.
 No document associations are registered and stock LibreSprite is not replaced.
 
-MCP configuration: run `bash` with one argument:
+For client/artwork selection and safe configuration generation, run
+`bash "/absolute/path/to/package/mcp/start-mcp.sh" --setup`. Explicit confirmation
+is required to merge JSON settings; existing entries/settings are preserved and
+backed up. Setup never connects to an active editor. The shared `.agents/skills/`
+directory is included beside `mcp/`, and its animation skill is also exposed as an
+MCP resource. See [agent-neutral setup](setup.md) for profiles and skill installation.
+
+For manual MCP configuration: run `bash` with one argument:
 `/absolute/path/to/package/mcp/start-mcp.sh`. If the client does not inherit your
 Terminal PATH, set `LIBRESPRITE_NODE` to an absolute Node.js executable. Node.js
 is deliberately not bundled; no npm install is needed to run the packaged server.

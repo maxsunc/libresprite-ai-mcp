@@ -19,7 +19,12 @@ unsaved artwork. macOS/Linux keep their existing Unix-socket transport.
    AI access. For AI editing, let the MCP client's `libresprite_launch` tool
    launch a **new** bridge-enabled editor, then call `libresprite_connect` and
    explicitly resume with `libresprite_set_paused`.
-3. Configure your MCP client using the bundled runtime, with absolute paths:
+3. Run `start-mcp.cmd --setup` in a terminal for the client/artwork wizard,
+   read-only prerequisites and optional confirmed JSON configuration install.
+   See [setup for local MCP agents](setup.md) for client profiles, settings paths,
+   first-sprite verification and optional shared skill installation. Setup never
+   connects to or restarts an active editor/client. For manual setup instead,
+   configure your MCP client using the bundled runtime, with absolute paths:
 
    ```json
    {
@@ -36,7 +41,7 @@ unsaved artwork. macOS/Linux keep their existing Unix-socket transport.
    entry into your client's configuration; do not replace unrelated settings.
    OpenCode uses its existing `mcp.servers` shape with a command array containing
    those same two paths. Pi users can follow the
-   [README's setup, verification and first-edit prompt](../README.md#use-with-pi).
+   [shared setup, verification and first-edit prompt](setup.md).
    `start-mcp.cmd` is a convenience stdio launcher; prefer the direct `node.exe`
    entry above for clients that don't execute `.cmd` files.
 4. Run `doctor.cmd` in a terminal for read-only diagnostics. `doctor.cmd --connect`

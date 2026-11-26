@@ -74,20 +74,22 @@ Load command 5
     def test_archive_allowlist_privacy_and_no_git_rebuild(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("src/index.ts", "assets/private.ase", "opencode.json", ".runtime/log", "docs/setup.md"):
+            fixtures = ("src/index.ts", "assets/private.ase", "opencode.json", ".runtime/log", "docs/setup.md",
+                        "AGENTS.md", ".agents/skills/pixel-animation/SKILL.md", ".agents/mcp.json", ".pi/skills/private/SKILL.md")
+            for name in fixtures:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("test")
             snapshot = {"sourceCommit": "abc123", "sourceDirty": False,
-                        "sourceFiles": {name: PACKAGE.digest(root / name) for name in ("src/index.ts", "assets/private.ase", "opencode.json", ".runtime/log", "docs/setup.md")}}
+                        "sourceFiles": {name: PACKAGE.digest(root / name) for name in fixtures}}
             (root / "SOURCE-SNAPSHOT.json").write_text(json.dumps(snapshot))
             names = PACKAGE.source_paths(root)
-            self.assertEqual(names, ["docs/setup.md", "src/index.ts"])
+            self.assertEqual(names, [".agents/skills/pixel-animation/SKILL.md", "AGENTS.md", "docs/setup.md", "src/index.ts"])
             self.assertFalse(PACKAGE.source_provenance(root)["sourceDirty"])
             archive = root / "source.tar.gz"
             hashes = PACKAGE.archive_source(root, archive, names)
             with tarfile.open(archive) as tar:
-                self.assertEqual(set(tar.getnames()), {"libresprite-ai-mcp/docs/setup.md", "libresprite-ai-mcp/src/index.ts", "libresprite-ai-mcp/SOURCE-SNAPSHOT.json"})
+                self.assertEqual(set(tar.getnames()), {"libresprite-ai-mcp/" + name for name in names} | {"libresprite-ai-mcp/SOURCE-SNAPSHOT.json"})
                 embedded = json.load(tar.extractfile("libresprite-ai-mcp/SOURCE-SNAPSHOT.json"))
                 self.assertEqual(embedded["sourceFiles"], hashes)
                 self.assertTrue(all(member.mtime == 0 for member in tar.getmembers()))
