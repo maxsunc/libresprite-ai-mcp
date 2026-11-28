@@ -1,6 +1,8 @@
-<img src="vendor/libresprite/desktop/icons/hicolor/256x256/apps/libresprite.png" alt="LibreSprite mascot with a pink pixel-art bow" width="128">
+<p align="center">
+  <img src="vendor/libresprite/desktop/icons/hicolor/256x256/apps/libresprite.png" alt="LibreSprite mascot with a pink pixel-art bow" width="128">
+</p>
 
-# LibreSprite AI MCP
+<h1 align="center">LibreSprite AI MCP</h1>
 
 Draw and animate pixel art with an AI agent in a real LibreSprite window. You can watch the edits, pause the agent, and undo its changes in the editor. The agent can also preview frames and export sprite sheets, GIFs, and APNGs.
 
