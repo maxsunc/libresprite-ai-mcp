@@ -21,6 +21,11 @@ npm ci
 npm run build
 ```
 
+For client/artwork selection, absolute-path configuration generation and optional
+explicit JSON installation, run `npm run setup`. See [agent-neutral setup](setup.md)
+for client formats, shared skills, verification and package launchers. Setup is
+CLI functionality, not an MCP tool, and never connects to the editor.
+
 The server speaks MCP over standard input/output:
 
 ```sh
@@ -48,6 +53,16 @@ Replace the placeholder path with your checkout's actual absolute path. See
 [`examples/mcp/`](../examples/mcp/README.md) for generic stdio and OpenCode V2
 templates. Merge the relevant entry into existing client settings; do not
 replace unrelated settings. Personal client configuration stays untracked.
+
+### Shared instructions and skills
+
+The server advertises safe first-session instructions during MCP initialization.
+Clients supporting resources can read `libresprite://guides/getting-started` and
+`libresprite://skills/pixel-animation`, without connecting to the native bridge.
+The animation resource contains the portable `.agents/skills/pixel-animation/SKILL.md`;
+clients without resource support can read/install the file. These are static
+read-only guides, not extra editing tools or automatic authorization to resume.
+See [skill setup/migration](setup.md#4-optional-shared-skills).
 
 ### Environment settings
 

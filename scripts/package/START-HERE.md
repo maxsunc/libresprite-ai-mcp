@@ -17,10 +17,14 @@ tests of inspection, correction and pixel-region workflows.
    launched and no files are changed. The signature is ad-hoc, **not notarized**;
    a downloaded app may require macOS Privacy & Security → Open Anyway. Only
    approve a package whose source and origin you trust; do not disable Gatekeeper.
-3. Configure your MCP client to run `bash` with the single argument
-   `/absolute/path/to/package/mcp/start-mcp.sh`. Set `LIBRESPRITE_NODE` to an
-   absolute Node executable if the client lacks your shell's PATH. Merge settings
-   into your existing configuration; nothing here changes it automatically.
+3. Run `bash "/absolute/path/to/package/mcp/start-mcp.sh" --setup` for client/artwork
+   selection, absolute-path configuration, and optional confirmed JSON settings
+   installation. Set `LIBRESPRITE_NODE` to your absolute Node executable if needed.
+   See [the setup guide](docs/setup.md) for client settings locations and shared
+   skills in `.agents/skills/`. Setup does not connect to an editor or restart a
+   client. Reload only the client you configured, when safe.
+   For manual configuration instead, configure your client to run `bash` with
+   the single argument `/absolute/path/to/package/mcp/start-mcp.sh`.
 4. Ask the agent to call `libresprite_launch` → `libresprite_connect` → explicitly
    resume. This opens a **new** opt-in window; it does not attach to the ordinary
    window from step 1. Editing starts paused. Pause before manual work; a local

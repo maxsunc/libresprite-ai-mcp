@@ -1,5 +1,14 @@
 # MCP client configuration examples
 
+**Recommended:** after building, run `npm run setup` (or a review package's
+stdio launcher with `--setup`). It generates absolute-path configuration for
+Claude Code/Desktop, Cursor, Gemini CLI, Pi, VS Code, OpenCode V2, Codex TOML,
+or generic stdio clients. It checks prerequisites without touching an active
+editor; settings writes require explicit permission. See
+[agent-neutral setup, client locations and shared skills](../../docs/setup.md).
+The templates below remain useful for manual configuration. Configuration
+profiles do not certify every external client/model or provide remote HTTP access.
+
 Build the native editor and run `npm ci` and `npm run build` first; see the
 [build guide](../../docs/building.md) and [live workflow](../../docs/live-bridge.md).
 These templates contain no credentials or machine-specific home directories.
@@ -37,7 +46,7 @@ Set `"exposure": "deferred"` on the server entry so Pi discovers tools when
 needed. Run `/reload`, then `/mcp`; `pi mcp list` also checks the connection from
 a terminal. A connected current server advertises **70 tools**. Pi starts the
 MCP server automatically, but the agent must explicitly launch/connect/resume the
-editor before editing. See the [README's complete Pi setup and example prompt](../../README.md#use-with-pi).
+editor before editing. See the [shared first-edit prompt](../../docs/setup.md#3-verify-and-make-the-first-sprite).
 
 An extension replacing Pi's `/mcp` command overrides the built-in configuration;
 remove that replacement to use these instructions. Keep personal `.pi/mcp.json`

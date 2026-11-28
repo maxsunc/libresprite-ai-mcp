@@ -17,10 +17,16 @@ __pycache__/
 /.runtime/
 /assets/
 
-# Personal client configuration and credentials; tracked examples live elsewhere.
-/.pi/mcp.json
-/opencode.json
-/opencode.jsonc
+# Personal client configuration, including setup backups/temp/lock files.
+# Tracked placeholder examples live under examples/mcp/.
+/.pi/mcp.json*
+/.mcp.json*
+/.cursor/mcp.json*
+/.gemini/settings.json*
+/.codex/config.toml*
+/.claude/settings.local.json*
+/.vscode/mcp.json*
+/opencode.json*
 /.env
 /.env.*
 !/.env.example

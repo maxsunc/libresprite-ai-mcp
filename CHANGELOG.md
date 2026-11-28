@@ -1,5 +1,21 @@
 # Development milestones
 
+## Unreleased — agent-neutral setup
+
+- `npm run setup` / packaged launcher `--setup`: interactive selection or read-only
+  configuration previews for common local stdio MCP clients, with absolute runtime,
+  editor, artwork and endpoint paths and existing read-only doctor checks.
+- Explicit, backed-up strict-JSON merges that preserve unrelated settings, refuse
+  conflicting entries/unsafe files, and do not restart or connect to active sessions.
+  Codex TOML is preview-only; JSONC is never stripped/reformatted by setup.
+- Portable animation skill moved from `.pi/skills/` to `.agents/skills/`, optional
+  explicit no-overwrite skill installation, shared `AGENTS.md` onboarding, and MCP
+  initialize instructions/static guide resources for clients without skill discovery.
+- Both review-package builders include shared skills/docs/examples; Windows now has
+  a package-specific start guide with working package-relative documentation links.
+- No binary publication, dependency installer, HTTP transport or claim of testing
+  every external client/model. Existing platform/license/signing limits remain.
+
 ## Unreleased — experimental Windows x64 port (2026-11-12)
 
 - Native current-user-only named-pipe bridge; same protocol/tools and pause,

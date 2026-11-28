@@ -156,13 +156,14 @@ def source_paths(root):
     else:
         names = list(json.loads((root / "SOURCE-SNAPSHOT.json").read_text())["sourceFiles"])
     directories = {"src", "scripts", "tests", "docs", "examples", "vendor", ".github"}
-    files = {"README.md", "CHANGELOG.md", "CREDITS.md", "LICENSE", "LICENSE.md", ".gitignore", ".gitattributes", "package.json", "package-lock.json", "tsconfig.json"}
+    files = {"README.md", "CHANGELOG.md", "CREDITS.md", "LICENSE", "LICENSE.md", ".gitignore", ".gitattributes", "package.json", "package-lock.json", "tsconfig.json", "AGENTS.md"}
     result = []
     for name in sorted(set(names) - {""}):
         if Path(name).is_absolute() or ".." in Path(name).parts:
             raise RuntimeError(f"Invalid source path: {name}")
         path = root / name
-        if Path(name).parts[0] not in directories and name not in files:
+        public_skill = name.startswith(".agents/skills/")
+        if Path(name).parts[0] not in directories and name not in files and not public_skill:
             continue
         if path.is_symlink():
             raise RuntimeError(f"Source symlinks require explicit review: {name}")
@@ -361,6 +362,8 @@ def build(output):
             shutil.copyfile(ROOT / "scripts/package" / name, mcp / name)
             (mcp / name).chmod(0o755)
         shutil.copytree(ROOT / "docs", stage / "docs")
+        shutil.copytree(ROOT / ".agents/skills", stage / ".agents/skills")
+        shutil.copyfile(ROOT / "AGENTS.md", stage / "AGENTS.md")
         shutil.copytree(ROOT / "examples/mcp", stage / "examples")
         shutil.copyfile(ROOT / "scripts/package/START-HERE.md", stage / "START-HERE.md")
         shutil.copyfile(ROOT / "scripts/package/verify-package.py", stage / "verify-package.py")

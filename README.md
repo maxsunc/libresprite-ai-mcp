@@ -75,13 +75,40 @@ bash scripts/run-libresprite.sh
 The helpers do not install an application into `/Applications` or require `sudo`.
 They operate on the local development build.
 
+## Set up your agent
+
+The server uses **standard local MCP over stdio**, not a Pi-specific integration.
+After building the editor/server above, run:
+
+```sh
+npm run setup
+# Read-only preview for a particular client:
+npm run setup -- --client cursor --asset-root "/absolute/path/to/artwork"
+```
+
+The wizard chooses your client/artwork folder, generates absolute-path config,
+and checks prerequisites without launching or connecting to an editor. Writing
+settings requires explicit confirmation; existing JSON is backed up, unrelated
+settings preserved, and conflicting entries refused. It never restarts a client.
+Newly built Windows packages: `start-mcp.cmd --setup`; macOS packages:
+`bash /path/to/package/mcp/start-mcp.sh --setup`. Older retained packages need
+manual configuration or a separate rebuild; they are not upgraded in place.
+
+Profiles cover Claude Code/Desktop, Cursor, Gemini CLI, Pi, VS Code, OpenCode V2,
+Codex (TOML preview), and generic stdio clients. This is configuration support,
+**not certification of every client/model**. Visual review needs MCP image
+support; HTTP-only/cloud and non-MCP agents cannot connect directly.
+See the **[agent-neutral setup guide](docs/setup.md)** for client paths, safe
+installation, first-sprite verification, shared skills and platform limits.
+Source build/review-package restrictions still apply; this is not a binary installer.
+
 ## Live MCP integration
 
-Configure your MCP client to run
+For manual configuration, configure your MCP client to run
 `node /absolute/path/to/libresprite-ai-mcp/dist/index.js`; merge one of the
 [client configuration templates](examples/mcp/README.md) into your existing
 settings and replace the placeholder path. Windows packages include their own
-Node runtime; see the [Pi example below](#use-with-pi) or the
+Node runtime; see the [setup guide](docs/setup.md) or the
 [Windows stdio template](examples/mcp/windows-stdio.json).
 Use `libresprite_launch`, then `libresprite_connect`, then explicitly resume
 with `libresprite_set_paused` before editing. A normal editor launched without
@@ -95,78 +122,36 @@ to see previews.
 
 ### Use with Pi
 
-Pi can start the MCP server automatically and let the agent launch and use the
-editor. With Pi's built-in MCP support:
-
-1. Merge the entry below into `~/.pi/agent/mcp.json` (on Windows,
-   `%USERPROFILE%\.pi\agent\mcp.json`) for all projects, or `.pi/mcp.json` for
-   one trusted project. Preserve any existing servers/settings.
-2. Replace `C:/Tools/LibreSprite-AI` with the extracted Windows package folder,
-   and `C:/Art/Sprites` with a folder for disposable artwork. These are example
-   paths, not required install locations.
-
-   ```json
-   {
-     "mcpServers": {
-       "libresprite": {
-         "command": "C:/Tools/LibreSprite-AI/mcp/runtime/node.exe",
-         "args": ["C:/Tools/LibreSprite-AI/mcp/dist/index.js"],
-         "env": {
-           "LIBRESPRITE_ASSET_ROOT": "C:/Art/Sprites"
-         },
-         "exposure": "deferred",
-         "description": "Create, inspect, draw and animate pixel art in a visible LibreSprite editor, with native undo and PNG feedback."
-       }
-     }
-   }
-   ```
-
-   For a source build on any supported platform, use `"command": "node"` and
-   `"args": ["/absolute/path/to/libresprite-ai-mcp/dist/index.js"]` instead.
-   Set `LIBRESPRITE_ASSET_ROOT` to a suitable absolute path for your platform.
-3. Run `/reload` in Pi, then `/mcp` to check the connection. From a terminal,
-   `pi mcp list` should report `libresprite: connected, 70 tools`. With
-   `deferred` exposure, Pi discovers tools when needed rather than loading all
-   70 definitions into every prompt.
-4. Ask the agent, for example:
-
-   > Use the LibreSprite MCP to launch the editor if needed, connect, and
-   > explicitly resume agent editing. Create a 16×16 slime sprite using the
-   > native drawing tools, render a preview, and save it as `slime.ase` inside
-   > the configured asset root.
-
-Pi starts the stdio server, **not the editor**, when it connects. The agent calls
-`libresprite_launch`, `libresprite_connect`, then `libresprite_set_paused`
-(`paused: false`) when instructed to edit. If a bridge-enabled editor is already
-running, connect instead of launching another. An ordinary manually launched
-window cannot be attached retroactively. A pause made in the editor must be
-released there, not by the agent.
-
-These steps use Pi's built-in MCP support. An extension that replaces `/mcp`
-may use a different configuration; remove that replacement to use these steps.
-Start with copies of artwork: the agent can edit and save inside its asset root.
+Run `npm run setup -- --client pi` for a preview, or use the package launcher
+with `--setup --client pi`. Install into `~/.pi/agent/mcp.json` (user) or
+`.pi/mcp.json` (trusted project) using the setup guide's explicit `--config` and
+`--write` options. The profile uses deferred exposure for the 70 tools.
+When safe, run `/reload`, then `/mcp` to check the connection. An extension that
+replaces Pi's built-in `/mcp` may use different configuration; see
+[client examples](examples/mcp/README.md#pi). The editor is launched/resumed only
+when instructed, just as with other agents.
 
 ### Pixel-animation workflow skill
 
-The project includes [`pixel-animation`](.pi/skills/pixel-animation/SKILL.md), a
-Pi skill for rough key poses, timed blocking, evidence-based review, and up to
-three autonomous correction passes before final human review. Reviewer subagents
+The project includes [`pixel-animation`](.agents/skills/pixel-animation/SKILL.md),
+an agent-neutral skill for rough key poses, timed blocking, evidence-based review,
+and up to three autonomous correction passes before final human review. Reviewer subagents
 are optional and read-only; the main agent remains the only editor. The skill
 requires LibreSprite MCP and image-capable review, not a new server feature.
 It distinguishes still-image/timing inspection from actual playback assessment
 and does not promise automatic animation quality.
 
-When running Pi from this checkout, run `/reload`, then invoke it explicitly:
+Clients that discover `.agents/skills/` can load it directly. Other agents can
+read the MCP resource `libresprite://skills/pixel-animation`, read the file, or
+explicitly install a copy:
 
-```text
-/skill:pixel-animation Create a 64x64 skeleton mage staff-slam animation.
+```sh
+npm run setup -- --client generic --skill-dir "/path/to/client/skills"
 ```
 
-To use it from other projects, copy the `pixel-animation` directory to
-`~/.pi/agent/skills/` (Windows: `%USERPROFILE%\.pi\agent\skills\`), then run
-`/reload`. Other Agent Skills-compatible clients can load the same `SKILL.md`
-using their own skill configuration. Installing the skill does not install or
-configure LibreSprite MCP.
+See [shared skill setup and migration](docs/setup.md#4-optional-shared-skills).
+No single discovery directory works in every client. Installing the skill does
+not configure MCP or grant permission to edit.
 
 ## Windows x64 portable review package
 
@@ -185,8 +170,8 @@ npm run package:windows
 
 Output goes under `build/packages/`; existing output is refused. Extract the
 whole package, keep its files together, and run `doctor.cmd` for read-only setup
-diagnostics. Use the [Pi setup above](#use-with-pi) or another
-[stdio client](examples/mcp/windows-stdio.json) to enable agent editing.
+diagnostics. Run `start-mcp.cmd --setup` for client configuration, or use the
+[manual stdio template](examples/mcp/windows-stdio.json) to enable agent editing.
 Preferences/recovery use `%APPDATA%\LibreSprite AI`, separate from stock
 LibreSprite. Assets default to `%USERPROFILE%\Pictures\LibreSprite AI MCP`
 unless `LIBRESPRITE_ASSET_ROOT` is set.

@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { BridgeClient, BridgeError, type BridgeResult } from "./bridge-client.js";
 import { cooperativeRequest } from "./cooperative.js";
+import { registerGuides, SERVER_INSTRUCTIONS } from "./guides.js";
 
 export interface ServerOptions {
   socketPath: string;
@@ -16,7 +17,8 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): { server: McpServer; close: () => void } {
-  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.13.0" });
+  const server = new McpServer({ name: "libresprite-ai-mcp", version: "0.13.0" }, { instructions: SERVER_INSTRUCTIONS });
+  registerGuides(server);
   const bridge = new BridgeClient(options.socketPath);
   // EOF/transport closure is also a disconnect, not just SIGTERM. Closing the
   // local socket makes the native editor pause and lets this process exit.
