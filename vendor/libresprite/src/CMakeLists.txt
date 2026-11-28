@@ -109,6 +109,9 @@ if(WIN32)
   set(win32_resources
     main/resources_win32.rc
     main/settings.manifest)
+  # windres does not report ICON files as preprocessor dependencies.
+  set_property(SOURCE main/resources_win32.rc APPEND PROPERTY
+    OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/data/icons/ase.ico")
 endif()
 
 add_executable(libresprite WIN32

@@ -1,62 +1,16 @@
+<img src="vendor/libresprite/desktop/icons/hicolor/256x256/apps/libresprite.png" alt="LibreSprite mascot with a pink pixel-art bow" width="128">
+
 # LibreSprite AI MCP
 
-A local MCP server and modified [LibreSprite](https://github.com/LibreSprite/LibreSprite)
-editor that let AI agents inspect, draw, edit, and animate sprites **in a visible
-application**, with native undo and rendered PNG feedback.
+Draw and animate pixel art with an AI agent in a real LibreSprite window. You can watch the edits, pause the agent, and undo its changes in the editor. The agent can also preview frames and export sprite sheets, GIFs, and APNGs.
 
-**Source alpha — v0.13.0.** This is an independent development project, not an
-official LibreSprite release. A stock LibreSprite installation does not contain
-this bridge. Review-package builders are available for Apple Silicon macOS and
-Windows x64. No public binary releases are published; Windows packages remain
-private-review-only pending a third-party license/corresponding-source audit.
+**Source alpha.** This is an independent project, not an official LibreSprite release. There’s no public download yet, and stock LibreSprite can’t connect to the MCP server.
 
-## Examples
+## Get started
 
-### Skeleton mage staff slam
+### 1. Build the editor and server
 
-**gpt-6.1-sol + animation skill used**
-
-![Skeleton mage performing a two-handed staff slam](examples/animations/skeleton-mage-staff-slam.gif)
-
-64×64 transparent sprite, 16 frames. The preview repeats; the action is a one-shot.
-
-## Current scope
-
-The reproducible native baseline and live bridge/MCP integration are implemented,
-including layer management, drawing primitives, cel transforms, selections,
-palettes/tags, animation previews, asset browsing, and PNG/sprite-sheet/GIF/APNG
-export. This is an early development
-integration, not yet a full artist workflow.
-
-The native editor and live integration have been verified on **Apple Silicon
-macOS**, including undo/redo, multi-frame animations, native-file round trips,
-and independently decoded exports. Linux transport is implemented but the full
-editor workflow has not been validated here. **Experimental Windows x64 support**
-now includes a native named-pipe bridge, build instructions and a standalone
-private-review ZIP builder with bundled Node.js; see [the Windows guide](docs/windows.md).
-Windows validation includes successful real-editor calls to **all 70 MCP tools**,
-the full native regression suite, and portable-package relocation to Unicode/spaced
-paths without MSYS2 on the runtime PATH. A full manual mouse/keyboard/pen review,
-code signing and third-party redistribution/license audit remain outstanding.
-CI jobs are provided, but automated tests do not certify every GUI workflow.
-
-- `vendor/libresprite/`: pinned LibreSprite source, including its dependency submodules.
-- `vendor/libresprite.upstream.json`: upstream revision and dependency provenance.
-- `scripts/`: source import, verification, build, and launch helpers.
-- `src/`: TypeScript MCP stdio server and serialized native-bridge client.
-- `docs/live-bridge.md`: tools, connection workflow, safety, and current limits.
-- `docs/building.md`: prerequisites and baseline verification steps.
-- `examples/mcp/`: portable client configuration templates.
-- `build/`: ignored local build outputs.
-
-The baseline is the upstream `v1.2` tag at
-`5cb089be32f56b4ae559ae51f0c5666049f41bca`, not a moving branch.
-
-## Build and run
-
-For Windows, follow [the UCRT64 build and portable-package guide](docs/windows.md).
-For macOS, you need Node.js 20+, Python 3, a C++ compiler, and the native dependencies
-in [the macOS build guide](docs/building.md). Start from a checkout:
+Install Node.js 20+ and follow the native prerequisites for [Apple Silicon macOS](docs/building.md) or [Windows x64](docs/windows.md#building-from-source). On Windows, run the commands in the **MSYS2 UCRT64** shell. The full Linux editor workflow hasn’t been verified.
 
 ```sh
 git clone https://github.com/maxsunc/libresprite-ai-mcp.git
@@ -66,295 +20,35 @@ npm run build
 bash scripts/build-libresprite.sh
 ```
 
-To run the editor without agent access:
-
-```sh
-bash scripts/run-libresprite.sh
-```
-
-The helpers do not install an application into `/Applications` or require `sudo`.
-They operate on the local development build.
-
-## Set up your agent
-
-The server uses **standard local MCP over stdio**, not a Pi-specific integration.
-After building the editor/server above, run:
+### 2. Connect your AI client
 
 ```sh
 npm run setup
-# Read-only preview for a particular client:
-npm run setup -- --client cursor --asset-root "/absolute/path/to/artwork"
 ```
 
-The wizard chooses your client/artwork folder, generates absolute-path config,
-and checks prerequisites without launching or connecting to an editor. Writing
-settings requires explicit confirmation; existing JSON is backed up, unrelated
-settings preserved, and conflicting entries refused. It never restarts a client.
-Newly built Windows packages: `start-mcp.cmd --setup`; macOS packages:
-`bash /path/to/package/mcp/start-mcp.sh --setup`. Older retained packages need
-manual configuration or a separate rebuild; they are not upgraded in place.
+Choose your client and an artwork folder. Start with copies, not your only originals. The wizard shows the configuration before writing anything. Reload your client after applying it and check that the **libresprite** server appears.
 
-Profiles cover Claude Code/Desktop, Cursor, Gemini CLI, Pi, VS Code, OpenCode V2,
-Codex (TOML preview), and generic stdio clients. This is configuration support,
-**not certification of every client/model**. Visual review needs MCP image
-support; HTTP-only/cloud and non-MCP agents cannot connect directly.
-See the **[agent-neutral setup guide](docs/setup.md)** for client paths, safe
-installation, first-sprite verification, shared skills and platform limits.
-Source build/review-package restrictions still apply; this is not a binary installer.
+Use a client that supports **local MCP over stdio**; to see previews, your client and model also need to support MCP images. See the [setup guide](docs/setup.md) for Cursor, Claude, Codex, VS Code, Pi, and other clients.
 
-## Live MCP integration
+### 3. Make your first sprite
 
-For manual configuration, configure your MCP client to run
-`node /absolute/path/to/libresprite-ai-mcp/dist/index.js`; merge one of the
-[client configuration templates](examples/mcp/README.md) into your existing
-settings and replace the placeholder path. Windows packages include their own
-Node runtime; see the [setup guide](docs/setup.md) or the
-[Windows stdio template](examples/mcp/windows-stdio.json).
-Use `libresprite_launch`, then `libresprite_connect`, then explicitly resume
-with `libresprite_set_paused` before editing. A normal editor launched without
-automation flags remains disconnected from agents.
+Try this prompt:
 
-The default asset root is the checkout's ignored `assets/` directory. Start with
-copies of artwork, not your only originals. The server may be configured with
-`LIBRESPRITE_ASSET_ROOT`, `LIBRESPRITE_SOCKET`, and `LIBRESPRITE_EXECUTABLE`; see
-the live guide for details. Your client/model needs to support MCP image results
-to see previews.
+> Use LibreSprite MCP to launch a new editor and connect to it. You can resume AI editing in that window. Draw a 16×16 slime, show me a preview, and save it as a new `.ase` file in my artwork folder. Don’t overwrite anything.
 
-### Use with Pi
+Agent editing starts paused. To take back control at any time, click **Pause** in the editor’s status bar. A pause set there can only be lifted in the window.
 
-Run `npm run setup -- --client pi` for a preview, or use the package launcher
-with `--setup --client pi`. Install into `~/.pi/agent/mcp.json` (user) or
-`.pi/mcp.json` (trusted project) using the setup guide's explicit `--config` and
-`--write` options. The profile uses deferred exposure for the 70 tools.
-When safe, run `/reload`, then `/mcp` to check the connection. An extension that
-replaces Pi's built-in `/mcp` may use different configuration; see
-[client examples](examples/mcp/README.md#pi). The editor is launched/resumed only
-when instructed, just as with other agents.
+## Animation showcase
 
-### Pixel-animation workflow skill
+| Amalgamation | Mage stomp | Mage run — forward lean |
+| --- | --- | --- |
+| <img src="examples/animations/amalgamation.gif" alt="The Amalgamation walks, winds up, and bursts" width="192"> | <img src="examples/animations/mage-stomp.gif" alt="A mage raises a foot and stomps" width="192"> | <img src="examples/animations/mage-run.gif" alt="A mage runs in a forward-leaning loop" width="192"> |
 
-The project includes [`pixel-animation`](.agents/skills/pixel-animation/SKILL.md),
-an agent-neutral skill for rough key poses, timed blocking, evidence-based review,
-and up to three autonomous correction passes before final human review. Reviewer subagents
-are optional and read-only; the main agent remains the only editor. The skill
-requires LibreSprite MCP and image-capable review, not a new server feature.
-It distinguishes still-image/timing inspection from actual playback assessment
-and does not promise automatic animation quality.
+See also: [skeleton mage staff slam](examples/animations/skeleton-mage-staff-slam.gif), made with gpt-6.1-sol and the pixel-animation skill.
 
-Clients that discover `.agents/skills/` can load it directly. Other agents can
-read the MCP resource `libresprite://skills/pixel-animation`, read the file, or
-explicitly install a copy:
+## Learn more
 
-```sh
-npm run setup -- --client generic --skill-dir "/path/to/client/skills"
-```
-
-See [shared skill setup and migration](docs/setup.md#4-optional-shared-skills).
-No single discovery directory works in every client. Installing the skill does
-not configure MCP or grant permission to edit.
-
-## Windows x64 portable review package
-
-The Windows package keeps `LibreSprite-AI.exe`, its DLLs/resources, and a
-production MCP server with bundled Node.js together. No separate Node, MSYS2,
-compiler or administrator access is needed **to run the package**. An external
-AI/MCP client and model are still required. Normal manual editing does not
-require an MCP client.
-
-After completing the [Windows build prerequisites](docs/windows.md#building-from-source)
-and building the editor/server, create a private-review folder and ZIP with:
-
-```sh
-npm run package:windows
-```
-
-Output goes under `build/packages/`; existing output is refused. Extract the
-whole package, keep its files together, and run `doctor.cmd` for read-only setup
-diagnostics. Run `start-mcp.cmd --setup` for client configuration, or use the
-[manual stdio template](examples/mcp/windows-stdio.json) to enable agent editing.
-Preferences/recovery use `%APPDATA%\LibreSprite AI`, separate from stock
-LibreSprite. Assets default to `%USERPROFILE%\Pictures\LibreSprite AI MCP`
-unless `LIBRESPRITE_ASSET_ROOT` is set.
-
-**Windows 11 x64 is the initial target.** The package is unsigned and may trigger
-SmartScreen. No installer or public Windows download is provided. Do not publicly
-redistribute generated binaries until the third-party license and corresponding
-source audit is complete; bundled notices alone do not satisfy that work. See
-[the Windows guide](docs/windows.md) for build, relocation, testing and release limits.
-
-## Apple Silicon review package
-
-**v0.13.0 review:** Cooperative editing remains experimental. Readiness/waiting,
-safe view-only panning and guarded prepare/apply corrections let manual edits
-coexist without blindly overwriting them. See
-[cooperative editing](docs/cooperative-editing.md) and
-[the v0.13 checklist](docs/testing-v0.13.md). Approved v0.9/v0.12 packages are not rebuilt.
-
-After installing the [build prerequisites](docs/building.md) and `npm ci`, run:
-
-```sh
-npm run package:macos
-```
-
-This rebuilds current source and creates a new folder and ZIP under
-`build/packages/`, with **LibreSprite AI.app**, bundled native libraries/resources,
-a production MCP folder, setup diagnostics, checksums, notices, and corresponding
-project/FreeType/LZ4 source. It never installs or replaces an app, changes client
-configuration, or includes private artwork. Existing output is refused.
-
-The package runs outside the checkout **without Homebrew**; MCP needs external
-Node.js 20+. Keep the folder together, run `bash /path/to/package/mcp/doctor.sh`,
-and configure the client to run `bash /path/to/package/mcp/start-mcp.sh`.
-The app has isolated preferences/recovery storage. Package minimum macOS is
-computed from all bundled libraries (the current local build requires **26.0+**).
-It is ad-hoc signed, **not Developer ID signed or notarized**.
-The separate **v0.12.0 package** includes the matching **67-tool** MCP server and
-current inspection, correction and pixel-region features. The earlier approved
-v0.9.0 package is retained unchanged; existing windows are not upgraded in place.
-See [packaging/setup](docs/packaging.md) and
-[the v0.12 package checklist](docs/testing-package-v0.12.md).
-
-## Editing features and tests
-
-Available now: document creation/opening, inspection, rendered PNG feedback,
-undoable RGBA pixels/shapes/strokes/fills, layers/groups, independent animation
-frames and timing, undo/redo, and native save.
-Cel position/opacity, flips/quarter-turns, explicit unlinking, native selection
-masks, selection-aware drawing, and overlap-safe selection moves/copies are supported.
-Whole-cel copy between existing layers/frames, ordered frame-range duplication,
-tag-safe frame reordering, atomic cel/timing batches, and selected-region
-flips/rotations across explicit frames are also available.
-Canvas resize preserves off-canvas pixels; explicit guarded cropping is undoable
-across all frames/layers. Independent layer/group copies, cycle-safe reparenting,
-native blend modes, polygon/bitmap masks, custom bitmap brushes, and exact
-indexed-color painting are now included.
-
-Read-only asset thumbnails, contact sheets/onion skins, and atomic PNG/sprite-sheet
-exports are also available, along with undoable palette/tag editing and animated
-GIF/APNG export. See the
-[live bridge guide](docs/live-bridge.md) for setup, all **70 tools**, and limitations.
-
-Read-only frame differences highlight added/removed/modified rendered pixels
-and report exact counts, bounds, and occupancy centroids. Isolated layer/group
-previews, scoped differences/contact sheets and explicit renderer-only hidden
-content inspection are also available. Loop/timing diagnostics report actual tag
-playback order, cumulative exposures, frame/transition measurements and GIF delay
-limitations without changing the animation. See
-[animation inspection](docs/animation-inspection.md). The approved v0.9.0 package
-has not been rebuilt; these source features require a new development editor.
-Use `node scripts/demo-inspection.mjs` for a separate generated review animation
-and saved inspection PNG/JSON results; it leaves its editor paused and open.
-
-Atomic animation correction now supports explicit multi-frame/layer RGBA or indexed
-pixel batches and per-frame masked-region moves/copies, with dry-run change summaries
-and one native Undo step. GUI selection/focus, other pixels and animation metadata
-are preserved. See [correction semantics](docs/animation-correction.md).
-This v0.11.0 milestone is awaiting user review; no personal artwork is edited by tests.
-Use `node scripts/demo-correction.mjs` for an independent generated before/after
-animation with dry-run summaries and two undoable correction steps; review with
-[the v0.11 checklist](docs/testing-v0.11.md).
-
-Exact native cel pixel reads expose RGBA, grayscale-alpha and indexed values
-in bounded rectangles, including off-canvas data, without rendering or changing
-the document. Read-only mask extraction finds raw alpha/value matches and explicit
-seeded connected components without changing the GUI selection. See
-[pixel regions](docs/pixel-regions.md). Atomic region/PNG stamping reuses native
-sprite parts across explicit frames/layers with replace, nontransparent-copy or
-alpha-blend modes, source snapshots and one Undo step.
-Use `node scripts/demo-pixel-regions.mjs` for a separate generated review editor
-and [the v0.12 checklist](docs/testing-v0.12.md) for native/MCP testing.
-
-The opt-in editor now has a persistent **AI status / Pause / Resume** button in
-the bottom-right status bar. A pause made there cannot be remotely overridden.
-Explicit document activation, frame/layer focus, and saved-only document closing
-support everyday navigation without silently switching the target of an edit.
-
-```sh
-npm test
-python3 -m unittest discover -s tests -v
-python3 scripts/smoke-test-libresprite.py
-python3 scripts/test-live-bridge.py
-```
-
-The integration test launches its own disposable GUI instance. A visible MCP
-demo is available with `node scripts/demo-live.mjs` after both builds.
-Use `node scripts/demo-live.mjs --animation` for a four-frame, grouped-layer demo
-with cel transforms, selection copy/fill feedback, editable swatches/tags, and animated exports.
-Native updates require a newly launched editor. Save existing work first; the
-tools never automatically close or kill a window that might hold unsaved work.
-
-## Editing safeguards and limits
-
-- Agent editing starts paused and pauses on disconnect; explicitly resume before
-  mutations. Use Pause for exclusive manual control; ordinary gestures use
-  [cooperative waiting/conflicts](docs/cooperative-editing.md). A local pause persists through
-  reconnect and must be released using the editor's Resume button.
-- Direct writes require the active document and its current revision; prepared
-  corrections additionally use immutable dependency tokens for safe disjoint rebasing. After a timeout
-  or uncertain result, reconnect and inspect rather than blindly retrying.
-- Native edits are undoable. Saves/exports publish atomically with overwrite
-  refused unless explicitly requested.
-- All document edits wait/refuse unfinished target-view drawing, transforms or
-  playback. Only proven viewport pans may coexist with reads/corrections.
-  Crops refuse pixel/mask loss unless explicitly authorized.
-- File access stays inside the configured asset root. The bridge is a local
-  private Unix socket (macOS/Linux) or same-user named pipe (Windows), not a public
-  network service.
-- Current bounds include 1024×1024 canvases, 256 frames, and 128 layers. Some
-  operations are RGBA-only; GIF quantizes color/alpha and delay, while APNG
-  preserves rendered RGBA and millisecond timing.
-
-These safeguards are not a hostile-input sandbox or a replacement for backups.
-Read [the exact operation semantics and limits](docs/live-bridge.md) before
-editing important artwork.
-
-## Review status and release limits
-
-The v0.9.0 Apple Silicon package was user-tested and approved on 2026-10-09.
-Downloadable binary releases and Developer ID signing/notarization remain separate
-decisions; no binary release has been published.
-Linux full-editor validation remains outstanding; the new Windows port is an
-experimental, separate review effort with [its own limits](docs/windows.md).
-
-The v0.6.0 user-control, v0.7.0 animation, and v0.8.0 editing milestones were
-reviewed and approved. Run
-`node scripts/demo-editing.mjs` for a separate editor with generated RGBA/indexed
-sprites and saved before/after crop files. One native Undo restores the canvas,
-discarded pixels on all frames/layers, and selection together. See
-[the step 3 test checklist](docs/testing-v0.8.md). The approved packaging milestone
-has its own [review checklist](docs/testing-v0.9.md). The earlier
-[step 1](docs/testing-v0.6.md) and
-[step 2](docs/testing-v0.7.md) checklists and demos remain available.
-
-See [the development milestones](CHANGELOG.md) for what is already implemented.
-Bug reports and focused contributions are welcome through the
-[GitHub issues](https://github.com/maxsunc/libresprite-ai-mcp/issues).
-Include the bridge version, platform, reproduction steps, and errors, and omit
-private artwork, local paths, and credentials. Use a disposable sprite for tests.
-
-## Source and licensing
-
-Project-authored integration code is **GPL-2.0-only**, with the full text in
-[`LICENSE`](LICENSE). LibreSprite and its libraries retain their upstream
-copyright and license notices. See [credits and third-party notices](CREDITS.md),
-[our native modifications](docs/native-changes.md), and
-[the licensing overview](LICENSE.md). Distributing modified editor binaries
-requires corresponding source/build information and applicable dependency
-notices; giving credit alone is not sufficient.
-
-The working artwork, runtime files, build outputs, and personal client
-configuration are not included. Using this editor does not automatically
-GPL-license independently created artwork; assets need their own rights review.
-
-The imported source contains ordinary files, not a nested Git repository or an
-application-level Git submodule. After cloning this repository,
-no upstream submodule initialization is required to build it. The retained
-upstream `.gitmodules` file is informational.
-
-`python3 scripts/vendor-libresprite.py --verify` checks the imported baseline
-against a pinned upstream checkout in the ignored `.cache/` directory. That
-command downloads the checkout if necessary and intentionally reports future
-native changes as differences. The importer refuses to overwrite existing source.
-The baseline and native bridge changes are separate commits. Project-authored
-integration code uses GPLv2-only; existing upstream component licenses remain
-intact.
+- [Live editing guide](docs/live-bridge.md) — tools, manual setup, and editing limits.
+- [Pixel-animation skill](.agents/skills/pixel-animation/SKILL.md) — an optional workflow for key poses, timing, and review.
+- [macOS review packaging](docs/packaging.md) and [Windows review packaging](docs/windows.md) — Windows packages are private-review only pending a licensing audit.
+- [Changelog](CHANGELOG.md) · [Credits](CREDITS.md) · [License](LICENSE.md) · [Report an issue](https://github.com/maxsunc/libresprite-ai-mcp/issues)

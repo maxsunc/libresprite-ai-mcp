@@ -1,5 +1,12 @@
 # Native changes from the pinned LibreSprite source
 
+## 2026-11-28 — app icon
+
+The upstream mascot gets a pink pixel-art bow and blush. The variant replaces the
+app icon PNGs and Windows executable icon, and feeds the existing macOS review
+packaging step. Document icon files are unchanged. The Windows resource object
+now explicitly depends on the ICO so incremental builds pick up icon changes.
+
 ## 2026-11-12 — experimental Windows x64 port
 
 - `src/app/automation/bridge.cpp` enables Windows while retaining the Unix branch;

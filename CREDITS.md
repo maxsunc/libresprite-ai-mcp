@@ -86,6 +86,10 @@ Project-authored integration code is **GPL-2.0-only**; see [LICENSE](LICENSE) an
 [the licensing overview](LICENSE.md). Existing upstream files keep their original
 file-level licenses and copyright notices.
 
-The local working artwork collection is not included in this repository.
-Independently created artwork is not automatically GPL-licensed by using the
-editor; any shared examples need their own explicit ownership and license review.
+The app icon is adapted from the upstream LibreSprite mascot with a pink pixel-art bow.
+
+The [animation showcase](README.md#animation-showcase) includes GIF previews of
+three Elderash sprite sheets: `Amalgamation_Full_Animation_Fixed.png`,
+`Mage_2_Stomp_Quiet_Arms_v2_Rough_SS.png`, and `Mage Run Forward Lean.png`.
+The original sheets and the local working artwork collection are not included.
+Independently created artwork is not automatically GPL-licensed by using the editor.
